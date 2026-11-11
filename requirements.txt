@@ -1,5 +1,6 @@
 streamlit
 google-genai
-gtts
+edge-tts
 SpeechRecognition
 pydub
+Pillow
