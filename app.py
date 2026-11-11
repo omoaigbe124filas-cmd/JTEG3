@@ -30,7 +30,7 @@ if prompt:
         try:
             history = "\n".join([f"{m['role']}: {m['text']}" for m in st.session_state.messages])
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.8-flash",
                 contents=f"{SYSTEM}\n\nConversation:\n{history}"
             )
             st.markdown(response.text)
