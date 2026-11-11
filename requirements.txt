@@ -3,4 +3,3 @@ google-genai
 gtts
 SpeechRecognition
 pydub
-google-genai
