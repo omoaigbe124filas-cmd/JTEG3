@@ -29,12 +29,23 @@ if prompt:
     with st.chat_message("assistant"):
         try:
             history = "\n".join([f"{m['role']}: {m['text']}" for m in st.session_state.messages])
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=f"{SYSTEM}\n\nConversation:\n{history}"
-            )
-            st.markdown(response.text)
-            st.session_state.messages.append({"role": "assistant", "text": response.text})
+            models_to_try = ["gemini-3.8-flash", "gemini-3-pro-preview", "gemini-2.0-flash"]
+            response = None
+            last_error = ""
+            for m in models_to_try:
+                try:
+                    response = client.models.generate_content(
+                        model=m,
+                        contents=f"{SYSTEM}\n\nConversation:\n{history}"
+                    )
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    continue
+            if response is None:
+                st.error(f"Google is busy right now (503). Wait 1 min and try again. Last error: {last_error}")
+            else:
+                st.markdown(response.text)
+                st.session_state.messages.append({"role": "assistant", "text": response.text})
         except Exception as e:
             st.error(f"VINCI ERROR: {e}")
-            st.info("If this says 400 / API key not valid, create a NEW key in Google AI Studio and update Secrets, then Reboot.")
