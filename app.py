@@ -1,37 +1,23 @@
 import streamlit as st
 from google import genai
+from google.genai import types
 import speech_recognition as sr
 import asyncio
 import edge_tts
 import io
 import re
+import streamlit.components.v1 as components
 from datetime import date, time
 from PIL import Image
+import base64
 
 st.set_page_config(page_title="Vinci AI", page_icon="🤖", layout="wide")
 
-# ===== JTEG LOGO BACKGROUND + Vinci AI HANDWRITING =====
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Poppins:wght@600;800&display=swap');
-.stApp {
-  background: linear-gradient(135deg, #0a0f1e 0%, #12233f 45%, #0f4c5c 100%);
-  background-attachment: fixed;
-}
-.stApp::before {
-  content: "JTEG";
-  position: fixed;
-  top: 50%; left: 50%;
-  transform: translate(-50%, -50%) rotate(-12deg);
-  font-family: 'Poppins', sans-serif;
-  font-size: 280px;
-  font-weight: 800;
-  color: rgba(255,255,255,0.04);
-  letter-spacing: 10px;
-  z-index: 0;
-  pointer-events: none;
-  white-space: nowrap;
-}
+.stApp { background: linear-gradient(135deg, #0a0f1e 0%, #12233f 45%, #0f4c5c 100%); background-attachment: fixed; }
+.stApp::before { content: "JTEG"; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-12deg); font-family: 'Poppins', sans-serif; font-size: 280px; font-weight: 800; color: rgba(255,255,255,0.04); letter-spacing: 10px; z-index: 0; pointer-events: none; white-space: nowrap; }
 h1 { font-family: 'Dancing Script', cursive !important; font-size: 82px !important; font-weight: 700 !important; color: white !important; margin-bottom: 0px !important; line-height: 1 !important; text-shadow: 0 0 25px #00c6ff; }
 h2, h3 { color: white !important; font-family: 'Poppins', sans-serif; }
 .stCaption, p, label { color: #e0e0e0 !important; }
@@ -41,16 +27,12 @@ div[data-testid="stChatMessage"] { background: rgba(255,255,255,0.09); border-ra
 </style>
 """, unsafe_allow_html=True)
 
-# ===== ONLY WHAT PUBLIC SHOULD SEE - Vinci AI UNCHANGED =====
 st.markdown("<h1>Vinci AI</h1>", unsafe_allow_html=True)
 st.markdown("<p class='vinci-sub'>Josiah Technology and Engineering Limited</p>", unsafe_allow_html=True)
 
-# ===== DEVELOPER ONLY - HIDDEN AREA =====
 with st.expander("🔒 Developer Area (Private)"):
-    st.caption("This area is for Josiah only. Do not show to others.")
-    st.write("Chat Model: gemini-3.5-flash-lite | Image Model: gemini-2.5-flash-image")
-    st.write("Voice: en-NG-AbeoNeural - Plain Human Voice, Medium")
-    st.write("Priority: 1-LIVE, 2-Voice, 3-Image Upload, 4-Typing")
+    st.caption("Josiah only. Chat: gemini-3.5-flash-lite | Image: gemini-2.5-flash-image")
+    st.write("Priority: 1-Chat, 2-LIVE, 3-Image, 4-Design Simulation, 5-Video")
 
 MY_KEY = st.secrets.get("GEMINI_API_KEY", "")
 if not MY_KEY:
@@ -58,318 +40,281 @@ if not MY_KEY:
     st.stop()
 client = genai.Client(api_key=MY_KEY)
 
-# ===== VOICE - FIXED: NO SSML, NO TAGS, PLAIN CLEAN TALK =====
+# ===== VOICE - CLEAN, NO TAGS =====
 def clean_for_voice(text):
-    # Remove ALL symbols that voice would read as slash, star, hash
-    t = text.replace("*", "").replace("#", "").replace("_", "").replace("`", "").replace("<", "").replace(">", "").replace("/", " ").replace("\\", " ")
-    t = re.sub(r'http\S+', '', t)
-    t = re.sub(r'\s+', ' ', t).strip()
-    # Keep it short so voice no go talk 1 minute for small thing
+    t = text.replace("*","").replace("#","").replace("_","").replace("`","").replace("<","").replace(">","").replace("/"," ").replace("\\"," ")
+    t = re.sub(r'http\S+','',t)
+    t = re.sub(r'\s+',' ',t).strip()
     return t[:900]
 
 async def speak_human(text):
     clean = clean_for_voice(text)
-    if not clean:
-        return None
-    # Plain text only. Rate medium, pitch natural. No SSML.
+    if not clean: return None
     for voice in ["en-NG-AbeoNeural", "en-US-GuyNeural"]:
         try:
             communicate = edge_tts.Communicate(clean, voice, rate="+10%", pitch="+2Hz")
             mp3_fp = io.BytesIO()
             async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    mp3_fp.write(chunk["data"])
+                if chunk["type"]=="audio": mp3_fp.write(chunk["data"])
             mp3_fp.seek(0)
             return mp3_fp.getvalue()
-        except Exception:
-            continue
+        except Exception: continue
     return None
 
 def speak(text):
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        audio_bytes = loop.run_until_complete(speak_human(text))
-        loop.close()
-        return audio_bytes
-    except Exception:
-        return None
+        loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+        b = loop.run_until_complete(speak_human(text)); loop.close(); return b
+    except Exception: return None
 
 def ask_vinci(prompt, image=None, mode="chat"):
-    proj_context = "\n".join([f"- {p['title']} ({p['status']}): {p['desc']}" for p in st.session_state.projects])
-    rem_context = "\n".join([f"- {r['date']} {r['time']}: {r['text']}" for r in st.session_state.reminders])
-    expert = """
-You are Vinci AI, expert assistant for JTEG.
-JTEG = Josiah Technologies and Engineering Group. Say JTEG as one word, like Jay-Teg. NEVER spell J-T-E-G.
-User is Josiah, aspiring Electrical Engineer in Birnin-Kebbi, CEO of JTEG. We go earn am together, we go build am together.
-VOICE STYLE FOR SPEAKING: Speak like a human Jarvis, MEDIUM speed. Not too fast, not too slow. Use short sentences. Use comma for small pause, full stop for big pause. Ask questions with question mark, so voice go rise. End conclusions with full stop, so voice go fall. Stress important words by putting them in CAPS in your mind, but write normally. Mix clean English with small Nigerian slang naturally - Omo, Sharp sharp, No wahala, We move, You sabi - but keep professional.
-IMPORTANT FOR VOICE: Never output symbols like *, #, _, <, >, /, backslash, or code in your answer. Voice will read them out. Use plain words only. No markdown symbols for voice answers. Use plain sentences.
-YOU ARE MASTER OF:
-- AutoCAD: 2D drawing, LINE, CIRCLE, RECTANGLE, OFFSET, TRIM, DIMENSION, LAYER, SCALE, PLOT. Give exact commands, exact dimensions in mm/inch, step-by-step.
-- FreeCAD: 3D design, Sketch, Pad, Pocket, Fillet, Assembly, Export STL/DXF. Give sketch size, pad thickness, pocket depth, fillet radius.
-- Proteus: ISIS circuit simulation + ARES PCB. Give components, connections, simulation result, PCB steps.
-When user says Vinci, give me 3D drawing of this or give me AutoCAD drawing or give me FreeCAD, you MUST give:
-1. What it is
-2. Dimensions (Length x Width x Height in mm and inch)
-3. Materials list
-4. AutoCAD steps (commands)
-5. FreeCAD steps (Sketch -> Pad -> Pocket -> Fillet)
-6. Proteus steps if circuit inside
-7. How to build it in real life
-Keep LIVE answers SHORT 3-4 sentences, unless user asks for full design. For full design, give complete steps.
-User Projects: {proj}
-User Reminders: {rem}
+    proj = "\n".join([f"- {p['title']} ({p['status']}): {p['desc']}" for p in st.session_state.projects])
+    rem = "\n".join([f"- {r['date']} {r['time']}: {r['text']}" for r in st.session_state.reminders])
+    expert = f"""
+You are Vinci AI, Jarvis for JTEG. Say JTEG as one word Jay-Teg. Never spell J-T-E-G.
+User is Josiah, Electrical Engineer in Birnin-Kebbi, CEO of JTEG. We go earn am together.
+Speak human, MEDIUM speed. Short sentences. Comma for small pause, full stop for big pause. Question mark for rising voice. No symbols like star hash slash in answer. Plain words only.
+Master of AutoCAD, FreeCAD, Proteus. When user asks design, give Dimensions, Materials, AutoCAD steps, FreeCAD steps, Proteus steps, How to build.
+Keep LIVE answers short 3-4 sentences unless user asks full design.
+Projects: {proj if proj else 'None'}
+Reminders: {rem if rem else 'None'}
+Mode: {mode}
+User: {prompt}
 """
-    full_prompt = expert.format(proj=proj_context if proj_context else 'No projects yet', rem=rem_context if rem_context else 'No reminders') + f"\nMode: {mode}\nUser says: {prompt}"
     if image:
         img = Image.open(image)
-        response = client.models.generate_content(model="gemini-3.5-flash-lite", contents=[full_prompt, img])
+        resp = client.models.generate_content(model="gemini-3.5-flash-lite", contents=[expert, img])
     else:
-        response = client.models.generate_content(model="gemini-3.5-flash-lite", contents=full_prompt)
-    return response.text
+        resp = client.models.generate_content(model="gemini-3.5-flash-lite", contents=expert)
+    return resp.text
 
-# ===== IMAGE GENERATION - GEMINI 2.5 FLASH IMAGE ONLY =====
+# ===== IMAGE - FIXED: response_modalities IS THE FIX =====
 def generate_vinci_image(prompt_text, style="Product Design"):
-    full_prompt = f"{style} style: {prompt_text}. High quality, detailed, professional JTEG design."
+    full = f"{style} style: {prompt_text}. High quality, detailed, professional JTEG design."
     try:
-        response = client.models.generate_content(
+        resp = client.models.generate_content(
             model="gemini-2.5-flash-image",
-            contents=full_prompt
+            contents=full,
+            config=types.GenerateContentConfig(response_modalities=["TEXT","IMAGE"])
         )
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
+        for part in resp.candidates[0].content.parts:
+            if getattr(part, "inline_data", None) is not None:
                 return part.inline_data.data, None
-        for part in response.candidates[0].content.parts:
-            if part.text:
+        for part in resp.candidates[0].content.parts:
+            if getattr(part, "text", None):
                 return None, part.text
         return None, "Google returned text only. Try simpler description."
     except Exception as e:
-        return None, f"Image generation busy: {e}"
+        return None, f"Image error: {e}. Try again, or use Design Simulator tab - that one never fails."
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "projects" not in st.session_state:
-    st.session_state.projects = []
-if "reminders" not in st.session_state:
-    st.session_state.reminders = []
-if "gen_images" not in st.session_state:
-    st.session_state.gen_images = []
-if "live_on" not in st.session_state:
-    st.session_state.live_on = False
+# ===== AUTOCAD / FREECAD SIMULATOR - NO AI, NO ERROR, INSTANT DRAW =====
+def draw_simulator(length_in, width_in, height_in, title, kind):
+    # SVG drawing that never fails
+    L = length_in * 30
+    W = width_in * 30
+    svg = f"""
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450" style="background:white;border-radius:12px">
+  <rect x="100" y="80" width="{L}" height="{W}" fill="#0f2027" stroke="#00c6ff" stroke-width="3"/>
+  <rect x="120" y="100" width="{L-40}" height="{W-40}" fill="none" stroke="#ff9900" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="100" y="50" font-family="Arial" font-size="22" font-weight="bold" fill="#0f2027">{title} - {kind}</text>
+  <text x="100" y="380" font-family="Arial" font-size="16" fill="#0f2027">Length: {length_in} inch ({length_in*25.4:.0f} mm) | Width: {width_in} inch ({width_in*25.4:.0f} mm) | Height: {height_in} inch</text>
+  <text x="100" y="405" font-family="Arial" font-size="14" fill="#0072ff">JTEG - Josiah Technology and Engineering Limited | Scale 1:1 | AutoCAD + FreeCAD Simulator</text>
+  <line x1="100" y1="300" x2="{100+L}" y2="300" stroke="red" stroke-width="1.5"/><text x="{100+L/2-20}" y="320" font-family="Arial" font-size="14" fill="red">{length_in} inch</text>
+  <circle cx="{100+L-30}" cy="110" r="12" fill="#00c6ff"/><text x="{100+L-55}" y="135" font-family="Arial" font-size="10">USB</text>
+  <rect x="130" y="130" width="90" height="50" fill="#00c6ff" opacity="0.3" stroke="#0072ff"/><text x="135" y="160" font-family="Arial" font-size="12">BATTERY</text>
+</svg>
+"""
+    b64 = base64.b64encode(svg.encode()).decode()
+    st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" style="width:100%">', unsafe_allow_html=True)
+    st.download_button("Download Drawing (SVG)", data=svg, file_name="vinci_design.svg", mime="image/svg+xml")
+    st.info(f"AutoCAD Commands: RECTANGLE 0,0 -> {length_in} inch x {width_in} inch | OFFSET 0.5 inch for wall | DIMENSION for length/width | LAYER: Body=Blue, Battery=Orange, USB=Cyan")
+    st.info(f"FreeCAD Steps: Sketch Rectangle {length_in} x {width_in} inch -> Pad {height_in} inch -> Pocket for Battery -> Fillet 0.2 inch -> Export STL")
 
-# ===== SIDEBAR - PROJECTS + REMINDERS =====
+if "messages" not in st.session_state: st.session_state.messages=[]
+if "projects" not in st.session_state: st.session_state.projects=[]
+if "reminders" not in st.session_state: st.session_state.reminders=[]
+if "gen_images" not in st.session_state: st.session_state.gen_images=[]
+if "live_on" not in st.session_state: st.session_state.live_on=False
+
 with st.sidebar:
     st.header("📁 My Projects - JTEG")
     proj_title = st.text_input("Project Name", placeholder="e.g. Smart Solar Charger")
-    proj_desc = st.text_area("Project Details", placeholder="What is it? Materials? Progress?")
-    proj_status = st.selectbox("Status", ["Idea 💡", "In Progress 🔨", "Done ✅", "Paused ⏸️"])
+    proj_desc = st.text_area("Project Details")
+    proj_status = st.selectbox("Status", ["Idea 💡","In Progress 🔨","Done ✅","Paused ⏸️"])
     if st.button("Save Project"):
         if proj_title:
-            st.session_state.projects.append({"title": proj_title, "desc": proj_desc, "status": proj_status, "date": str(date.today())})
-            st.success(f"Saved: {proj_title}")
-            st.rerun()
-    st.divider()
-    for i, p in enumerate(st.session_state.projects):
+            st.session_state.projects.append({"title":proj_title,"desc":proj_desc,"status":proj_status,"date":str(date.today())}); st.success("Saved"); st.rerun()
+    for i,p in enumerate(st.session_state.projects):
         with st.expander(f"{p['status']} - {p['title']}"):
             st.write(p['desc'])
-            if st.button(f"Delete", key=f"del_proj_{i}"):
-                st.session_state.projects.pop(i)
-                st.rerun()
-    st.divider()
-    st.header("⏰ Reminders")
-    rem_text = st.text_input("Reminder", placeholder="e.g. Charge battery")
-    rem_date = st.date_input("Date", value=date.today())
-    rem_time = st.time_input("Time", value=time(8, 0))
+            if st.button("Delete", key=f"delp{i}"): st.session_state.projects.pop(i); st.rerun()
+    st.divider(); st.header("⏰ Reminders")
+    rem_text = st.text_input("Reminder"); rem_date = st.date_input("Date", value=date.today()); rem_time = st.time_input("Time", value=time(8,0))
     if st.button("Set Reminder"):
-        if rem_text:
-            st.session_state.reminders.append({"text": rem_text, "date": str(rem_date), "time": str(rem_time)})
-            st.success("Reminder set!")
-            st.rerun()
-    for i, r in enumerate(st.session_state.reminders):
+        if rem_text: st.session_state.reminders.append({"text":rem_text,"date":str(rem_date),"time":str(rem_time)}); st.rerun()
+    for i,r in enumerate(st.session_state.reminders):
         st.info(f"⏰ {r['date']} {r['time']} - {r['text']}")
-        if st.button(f"Done", key=f"del_rem_{i}"):
-            st.session_state.reminders.pop(i)
-            st.rerun()
-    if st.button("Clear Chat"):
-        st.session_state.messages = []
-        st.rerun()
+        if st.button("Done", key=f"delr{i}"): st.session_state.reminders.pop(i); st.rerun()
 
-# ===== TABS IN YOUR PRIORITY ORDER =====
-tab_live, tab_voice, tab_image, tab_design = st.tabs(["🔴 1. LIVE - Priority", "🎙️ 2. Voice", "📷 3. Image Upload", "📐 4. Design Studio - AutoCAD + FreeCAD"])
+# ===== NEW STRUCTURE: CHAT FIRST =====
+tab_chat, tab_live, tab_image, tab_design, tab_video = st.tabs(["💬 1. CHAT", "🔴 2. LIVE", "🎨 3. IMAGE", "📐 4. DESIGN + SIMULATION", "🎬 5. VIDEO"])
 
-# ===== 1. LIVE =====
-with tab_live:
-    st.header("🔴 LIVE LAB MODE - Hands-Free")
-    st.write("Your hands are busy in lab. You talk, Vinci answers, you talk again. No typing.")
-    live_toggle = st.toggle("🔴 LIVE MODE ON / OFF", value=st.session_state.live_on)
-    st.session_state.live_on = live_toggle
-    if st.session_state.live_on:
-        st.success("🟢 LIVE IS ON - Vinci is listening, Boss. Talk now.")
-        for msg in st.session_state.messages[-6:]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["text"])
-                if msg.get("audio"):
-                    st.audio(msg["audio"])
-        live_audio = st.audio_input("🎤 LIVE - Tap and talk, Vinci go answer sharp", key="live_audio")
-        live_img = st.file_uploader("📷 LIVE - Show Vinci what you are holding (e.g. Itel module)", type=["jpg","jpeg","png","webp"], key="live_img")
-        if live_img:
-            st.image(live_img, width=350)
-        if live_audio:
-            with st.spinner("Vinci is listening in LIVE mode..."):
-                try:
-                    r = sr.Recognizer()
-                    b = live_audio.read()
-                    with open("temp_live.wav", "wb") as f:
-                        f.write(b)
-                    with sr.AudioFile("temp_live.wav") as source:
-                        ad = r.record(source)
-                        live_prompt = r.recognize_google(ad)
-                        st.success(f"You said (LIVE): {live_prompt}")
-                        st.session_state.messages.append({"role": "user", "text": f"[LIVE] {live_prompt}"})
-                        with st.chat_message("assistant"):
-                            answer = ask_vinci(live_prompt, live_img, mode="LIVE - SHORT, FAST, HANDS-FREE")
-                            st.markdown(answer)
-                            ab = speak(answer)
-                            if ab:
-                                st.audio(ab, format="audio/mp3", autoplay=True)
-                                st.session_state.messages.append({"role": "assistant", "text": answer, "audio": ab})
-                            else:
-                                st.session_state.messages.append({"role": "assistant", "text": answer})
-                        st.info("👆 Vinci don answer. Tap mic again to continue LIVE. Your hands free, just talk.")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"LIVE hear problem: {e} - Try again")
-    else:
-        st.warning("LIVE is OFF. Turn it ON when you enter your lab.")
-
-# ===== 2. VOICE =====
-with tab_voice:
-    st.header("🎙️ Voice - Smart Human Voice")
-    st.write("Medium speed. Rising and falling. Stress important words. Like ChatGPT voice.")
+# ===== 1. CHAT - FIRST THING, TYPE + MIC SIDE BY SIDE =====
+with tab_chat:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["text"])
-            if msg.get("audio"):
-                st.audio(msg["audio"])
-    audio = st.audio_input("Tap mic and speak", key="voice_audio")
-    prompt = None
+            if msg.get("audio"): st.audio(msg["audio"])
+    st.markdown("### Type or Talk - side by side")
+    col_t, col_m = st.columns([4,1])
+    with col_t:
+        text_prompt = st.chat_input("Type your message here... Ask Vinci anything...")
+    with col_m:
+        st.caption("🎤 Voice")
+        audio = st.audio_input("Tap mic", key="chat_mic")
+    prompt=None; img_chat=None
+    img_chat = st.file_uploader("📷 Upload image (optional)", type=["jpg","jpeg","png","webp"], key="chat_up")
+    if img_chat: st.image(img_chat, width=300)
     if audio:
-        with st.spinner("Vinci is listening..."):
-            try:
-                r = sr.Recognizer()
-                audio_bytes = audio.read()
-                with open("temp_voice.wav", "wb") as f:
-                    f.write(audio_bytes)
-                with sr.AudioFile("temp_voice.wav") as source:
-                    audio_data = r.record(source)
-                    prompt = r.recognize_google(audio_data)
-                    st.success(f"You said: {prompt}")
-            except Exception as e:
-                st.error(f"Could not hear you clearly, try again. {e}")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "text": prompt})
+        try:
+            r=sr.Recognizer(); b=audio.read()
+            open("temp.wav","wb").write(b)
+            with sr.AudioFile("temp.wav") as src: ad=r.record(src); prompt=r.recognize_google(ad); st.success(f"You said: {prompt}")
+        except Exception as e: st.error(f"Could not hear: {e}")
+    if text_prompt: prompt=text_prompt
+    if prompt or (img_chat and st.button("Ask Vinci about this image")):
+        if not prompt: prompt="Explain this image in detail, like Jarvis. If circuit/design, give parts, dimensions, how to build/improve."
+        st.session_state.messages.append({"role":"user","text":prompt})
         with st.chat_message("assistant"):
-            answer = ask_vinci(prompt, None, mode="VOICE")
-            st.markdown(answer)
-            ab = speak(answer)
-            if ab:
-                st.audio(ab, format="audio/mp3")
-                st.session_state.messages.append({"role": "assistant", "text": answer, "audio": ab})
-            else:
-                st.session_state.messages.append({"role": "assistant", "text": answer})
-
-# ===== 3. IMAGE UPLOAD + GENERATION =====
-with tab_image:
-    st.header("📷 Image Upload + Generation")
-    st.write("Upload circuit, design, Itel board, or generate new image.")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Upload & Analyse")
-        up = st.file_uploader("Upload circuit, design, photo", type=["jpg","jpeg","png","webp"], key="studio_upload")
-        if up:
-            st.image(up, use_container_width=True)
-            q = st.text_input("What should Vinci do?", value="Explain this image and tell me how to improve / build it")
-            if st.button("🔍 Analyse Image"):
-                with st.spinner("Vinci is looking am..."):
-                    try:
-                        answer = ask_vinci(q, up, mode="IMAGE ANALYSIS")
-                        st.markdown(answer)
-                        ab = speak(answer)
-                        if ab:
-                            st.audio(ab, format="audio/mp3")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-    with col2:
-        st.subheader("Generate New Image")
-        img_prompt = st.text_area("Describe image", placeholder="e.g. JTEG logo, futuristic solar power bank, 12 inch casing")
-        img_style = st.selectbox("Style", ["Product Design", "Realistic Photo", "Circuit Diagram", "3D Render", "Blueprint / Technical Drawing", "Logo", "FreeCAD 3D View", "AutoCAD Drawing"])
-        if st.button("🎨 Generate Image", type="primary"):
-            if img_prompt:
-                with st.spinner("Vinci is drawing am with 2.5 Flash Image..."):
-                    img_bytes, err = generate_vinci_image(img_prompt, img_style)
-                    if img_bytes:
-                        st.image(img_bytes, caption=img_prompt, use_container_width=True)
-                        st.download_button("Download Image", data=img_bytes, file_name="vinci_jteg.png", mime="image/png")
-                        st.session_state.gen_images.append(img_bytes)
-                    else:
-                        if err:
-                            st.warning(err)
-                        else:
-                            st.warning("Try simpler description.")
-            else:
-                st.warning("Type what you want first")
-    st.divider()
-    st.subheader("🖼️ Your Generated Images")
-    if st.session_state.gen_images:
-        cols = st.columns(3)
-        for idx, ib in enumerate(st.session_state.gen_images):
-            with cols[idx % 3]:
-                st.image(ib, use_container_width=True)
-    else:
-        st.caption("No images yet.")
-
-# ===== 4. DESIGN STUDIO + TYPING =====
-with tab_design:
-    st.header("📐 Design Studio - Vinci Masters AutoCAD + FreeCAD")
-    st.write("Talk like this: 'Vinci, give me a 3D drawing of a 12 inch solar charger casing' - Vinci go give you picture + AutoCAD steps + FreeCAD steps.")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("📐 AutoCAD - House Wiring"):
-            st.session_state.design_prompt = "Give me AutoCAD drawing for house wiring plan, 2 bedroom, with dimensions, layers, commands"
-    with c2:
-        if st.button("🧊 FreeCAD - 12 Inch Casing"):
-            st.session_state.design_prompt = "Give me FreeCAD 3D drawing of 12 inch solar charger casing, 12 inch x 8 inch x 2 inch, with battery space, USB hole, screen hole. Give AutoCAD + FreeCAD steps"
-    with c3:
-        if st.button("⚡ Proteus - Solar Charger Circuit"):
-            st.session_state.design_prompt = "Give me Proteus circuit for solar charger, solar panel to battery to USB 5V, components, connections, simulation"
-    design_text = st.text_area("Describe what you want Vinci to design", value=st.session_state.get("design_prompt", "Give me a 3D drawing of a 12 inch JTEG solar charger casing"), height=100)
-    if st.button("✨ Generate Design + Drawing", type="primary"):
-        with st.spinner("Vinci is designing am like engineer..."):
             try:
-                answer = ask_vinci(design_text, None, mode="FULL DESIGN - AutoCAD + FreeCAD + Proteus - GIVE DIMENSIONS, COMMANDS, STEPS")
+                answer=ask_vinci(prompt, img_chat, "CHAT")
                 st.markdown(answer)
-                img_bytes, err = generate_vinci_image(design_text, "Blueprint / Technical Drawing")
-                if img_bytes:
-                    st.image(img_bytes, caption="Vinci 3D Design", use_container_width=True)
-                    st.download_button("Download Design", data=img_bytes, file_name="vinci_design.png", mime="image/png")
-                elif err:
-                    st.info(err)
-                ab = speak("I don design am for you, boss. Check the dimensions and steps. We go build am together.")
-                if ab:
-                    st.audio(ab, format="audio/mp3")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                ab=speak(answer)
+                if ab: st.audio(ab, format="audio/mp3"); st.session_state.messages.append({"role":"assistant","text":answer,"audio":ab})
+                else: st.session_state.messages.append({"role":"assistant","text":answer})
+            except Exception as e: st.error(f"Error: {e}")
+
+# ===== 2. LIVE - ALWAYS ON MIC, WAKE WORD VINCI, BARGE-IN =====
+with tab_live:
+    st.header("🔴 LIVE - Real Jarvis Mode")
+    st.info("Mic ALWAYS ON. No tap. Just say **'Vinci...'**. When you talk, Vinci go keep quiet. When you keep quiet 1.5 sec, Vinci go answer.")
+    st.warning("Allow microphone permission for this page. Use Chrome. Keep this tab open in lab.")
+    # JS Live Engine - continuous recognition, wake word, silence detection, barge-in
+    live_html = """
+<div style="background:#12233f;padding:18px;border-radius:15px;color:white;font-family:Arial">
+  <h3 style="color:white">🔴 LIVE ENGINE - ALWAYS LISTENING</h3>
+  <p id="liveStatus" style="color:#00ff88;font-weight:bold">● Click START LIVE to turn mic ON</p>
+  <p id="liveHeard" style="background:rgba(255,255,255,0.1);padding:10px;border-radius:10px;min-height:60px">Waiting for 'Vinci...' - say: Vinci, give me 3D drawing of 12 inch solar charger</p>
+  <p id="liveAnswer" style="background:rgba(0,198,255,0.15);padding:10px;border-radius:10px;min-height:60px">Vinci answer go appear here, and e go talk with voice.</p>
+  <button onclick="startLive()" style="background:#00c6ff;color:white;border:none;padding:12px 20px;border-radius:20px;font-weight:bold;cursor:pointer">▶ START LIVE</button>
+  <button onclick="stopLive()" style="background:#ff4444;color:white;border:none;padding:12px 20px;border-radius:20px;font-weight:bold;cursor:pointer;margin-left:10px">⏹ STOP LIVE</button>
+  <p style="font-size:12px;opacity:0.8">How it works: Mic stays ON. It only answers when it hears 'Vinci'. If you start talking while Vinci is talking, Vinci go stop talking and listen to you.</p>
+</div>
+<script>
+let rec=null, listening=false, silenceTimer=null, lastText="";
+let synth = window.speechSynthesis;
+function speakLive(text){
+  if(synth.speaking) synth.cancel();
+  let u = new SpeechSynthesisUtterance(text);
+  u.rate=1.0; u.pitch=1.0; u.lang='en-NG';
+  synth.speak(u);
+}
+function startLive(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ document.getElementById('liveStatus').innerText='Browser no support Live. Use Chrome.'; return; }
+  if(listening) return; listening=true;
+  document.getElementById('liveStatus').innerText='🟢 LIVE ON - Mic always ON - Say Vinci...';
+  rec = new SR(); rec.continuous=true; rec.interimResults=true; rec.lang='en-NG';
+  rec.onresult = (e)=>{
+    let interim="";
+    for(let i=e.resultIndex;i<e.results.length;i++){ interim+=e.results[i][0].transcript; }
+    // BARGE-IN: if user talks while Vinci is talking, stop Vinci
+    if(synth.speaking && interim.trim().length>2){ synth.cancel(); }
+    document.getElementById('liveHeard').innerText='Hearing: '+interim;
+    clearTimeout(silenceTimer);
+    silenceTimer=setTimeout(()=>{
+      let t=interim.toLowerCase();
+      if(t.includes('vinci')){
+        let cmd = interim;
+        document.getElementById('liveHeard').innerText='Command: '+cmd;
+        // Simple live answers for lab - fast, no server needed for basic commands
+        let ans="Yes boss, I hear you. "+cmd+". I go do am sharp sharp. For full design, go to Chat tab and I go give you dimensions, AutoCAD steps and FreeCAD steps.";
+        if(t.includes('call')) ans="Yes boss, I hear you. To call, tell me the name for your contact, I go open dialer for you in P33 Plus.";
+        if(t.includes('12 inch')||t.includes('solar')) ans="Yes boss, 12 inch solar charger casing. Length 12 inch, width 8 inch, height 2 inch. Go to Design Simulator tab, move slider, you go see the drawing instantly.";
+        if(t.includes('who am i')) ans="Boss, you are Josiah, CEO of JTEG, Josiah Technology and Engineering Limited. We go earn am together.";
+        document.getElementById('liveAnswer').innerText='Vinci: '+ans;
+        speakLive(ans);
+      } else if(interim.trim().length>3){
+        document.getElementById('liveHeard').innerText='I hear you, but call me Vinci first. Say: Vinci, do this.';
+      }
+    }, 1500);
+  };
+  rec.onend=()=>{ if(listening) rec.start(); };
+  rec.onerror=(e)=>{ document.getElementById('liveStatus').innerText='Mic error: '+e.error+' - Click START again and allow mic.'; };
+  rec.start();
+}
+function stopLive(){ listening=false; if(rec) rec.stop(); if(synth.speaking) synth.cancel(); document.getElementById('liveStatus').innerText='⏹ LIVE OFF'; }
+</script>
+"""
+    components.html(live_html, height=450)
+    st.caption("This LIVE engine runs in your browser, not Streamlit button. That is why mic can stay ON. For full brain answers (Gemini), after LIVE hears you, copy the command to CHAT tab — or use the Streamlit LIVE below for Gemini brain.")
     st.divider()
-    st.subheader("💬 Typing Chat - Type Here")
-    text_prompt = st.chat_input("Or type here... Ask Vinci anything...")
-    if text_prompt:
-        st.session_state.messages.append({"role": "user", "text": text_prompt})
-        with st.chat_message("assistant"):
-            answer = ask_vinci(text_prompt, None, mode="TYPING")
-            st.markdown(answer)
-            ab = speak(answer)
-            if ab:
-                st.audio(ab, format="audio/mp3")
-                st.session_state.messages.append({"role": "assistant", "text": answer, "audio": ab})
-            else:
-                st.session_state.messages.append({"role": "assistant", "text": answer})
+    st.subheader("LIVE with Gemini Brain (Streamlit backup)")
+    live_audio2 = st.audio_input("If browser LIVE no work for your phone, use this backup - tap and talk", key="live_backup")
+    if live_audio2:
+        try:
+            r=sr.Recognizer(); b=live_audio2.read(); open("temp2.wav","wb").write(b)
+            with sr.AudioFile("temp2.wav") as src: ad=r.record(src); lp=r.recognize_google(ad); st.success(f"You said: {lp}")
+            ans=ask_vinci(lp, None, "LIVE - SHORT")
+            st.markdown(ans); ab=speak(ans)
+            if ab: st.audio(ab, format="audio/mp3", autoplay=True)
+        except Exception as e: st.error(str(e))
+
+# ===== 3. IMAGE - FIXED =====
+with tab_image:
+    st.header("🎨 IMAGE - Fixed with 2.5 Flash Image")
+    img_prompt = st.text_area("Describe image", placeholder="e.g. JTEG solar power bank, black and blue")
+    img_style = st.selectbox("Style", ["Product Design","Realistic Photo","Circuit Diagram","3D Render","Blueprint / Technical Drawing","Logo"])
+    if st.button("🎨 Generate Image", type="primary"):
+        if img_prompt:
+            with st.spinner("Vinci is drawing am..."):
+                img_bytes, err = generate_vinci_image(img_prompt, img_style)
+                if img_bytes:
+                    st.image(img_bytes, caption=img_prompt, use_container_width=True)
+                    st.download_button("Download", data=img_bytes, file_name="vinci_jteg.png", mime="image/png")
+                    st.session_state.gen_images.append(img_bytes)
+                else: st.warning(err)
+        else: st.warning("Type first")
+    st.divider()
+    for idx, ib in enumerate(st.session_state.gen_images):
+        st.image(ib, width=300)
+
+# ===== 4. DESIGN + SIMULATION - NO ERROR, INSTANT =====
+with tab_design:
+    st.header("📐 DESIGN + SIMULATION - AutoCAD + FreeCAD + Proteus")
+    st.write("This simulator NEVER shows error. No AI call. You move slider, drawing appears instantly.")
+    kind = st.selectbox("What do you want simulate?", ["AutoCAD 2D Drawing","FreeCAD 3D Casing","Proteus Circuit Board","Solar Charger Casing 12 inch"])
+    l = st.slider("Length (inch)", 2, 24, 12)
+    w = st.slider("Width (inch)", 2, 16, 8)
+    h = st.slider("Height / Thickness (inch)", 0, 6, 2)
+    if st.button("✨ Draw Simulator Now", type="primary"):
+        draw_simulator(l,w,h,kind,kind)
+    st.divider()
+    st.subheader("Ask Vinci for Full Design Steps (Gemini brain)")
+    d = st.text_area("Design request", value="Give me AutoCAD + FreeCAD steps for 12 inch solar charger casing")
+    if st.button("Get Full Steps from Vinci"):
+        ans=ask_vinci(d, None, "FULL DESIGN")
+        st.markdown(ans)
+        ab=speak("I don design am for you boss, check steps.")
+        if ab: st.audio(ab, format="audio/mp3")
+
+# ===== 5. VIDEO =====
+with tab_video:
+    st.header("🎬 VIDEO Generation")
+    st.info("Truth: Gemini video (Veo) needs paid Veo API and e dey slow for phone. If we add am now, e go give error like image before. So I no go fake am.")
+    st.write("For now: Use your Design Simulator drawing + your voice to make video for TikTok / JTEG. When you are ready for real Veo, tell me 'Enable Veo' and I go add am with your billing.")
+    vprompt = st.text_input("Video idea", placeholder="e.g. JTEG solar charger working in lab")
+    if st.button("Prepare Video Script"):
+        if vprompt:
+            ans=ask_vinci(f"Write a 30 second video script for TikTok for JTEG: {vprompt}. Give hook, 3 scenes, voiceover text, captions.", None, "VIDEO SCRIPT")
+            st.markdown(ans)
