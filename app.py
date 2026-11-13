@@ -764,6 +764,605 @@ with tabs[1]:
 
         if st.button("Analyze research with Vinci"):
 
+            
             question = (
                 "Analyze the current research results. "
-                "Compare evidence, explain findi
+                "Compare the evidence, explain the findings, "
+                "identify limitations, and cite sources using "
+                "their S numbers."
+            )
+
+            save_message(
+                st.session_state.cid,
+                "user",
+                question
+            )
+
+            with st.spinner("Vinci is analyzing the research..."):
+                try:
+                    answer = ask_vinci(
+                        st.session_state.cid,
+                        question,
+                        model,
+                        research=st.session_state.research_context
+                    )
+
+                    save_message(
+                        st.session_state.cid,
+                        "assistant",
+                        answer
+                    )
+
+                    st.markdown(answer)
+
+                except Exception as error:
+                    st.error(f"Research analysis error: {error}")
+
+
+# ============================================================
+# VOICE — PUSH TO TALK
+# ============================================================
+
+with tabs[2]:
+
+    st.subheader("Vinci Voice")
+
+    st.info(
+        "Push-to-talk mode: record a message, transcribe it, "
+        "and receive a response. This is not continuous "
+        "real-time voice streaming."
+    )
+
+    audio = st.audio_input("Record your message")
+
+    if audio and st.button("Send voice message"):
+
+        try:
+            with st.spinner("Transcribing audio..."):
+                transcript = transcribe_audio(audio)
+
+            st.markdown("**Your transcription:**")
+            st.write(transcript)
+
+            if transcript.strip():
+
+                save_message(
+                    st.session_state.cid,
+                    "user",
+                    transcript
+                )
+
+                with st.spinner("Vinci is responding..."):
+
+                    answer = ask_vinci(
+                        st.session_state.cid,
+                        transcript,
+                        model
+                    )
+
+                save_message(
+                    st.session_state.cid,
+                    "assistant",
+                    answer
+                )
+
+                st.markdown(answer)
+                st.session_state.voice_answer = answer
+
+        except Exception as error:
+            st.error(f"Voice error: {error}")
+
+    if st.session_state.get("voice_answer"):
+
+        if st.button("Read answer aloud"):
+
+            try:
+                with st.spinner("Preparing audio..."):
+                    audio_data = make_speech(
+                        st.session_state.voice_answer
+                    )
+
+                st.audio(audio_data, format="audio/mp3")
+
+            except Exception as error:
+                st.error(f"Speech error: {error}")
+
+
+# ============================================================
+# IMAGE STUDIO — FREE IMAGE SERVICE
+# ============================================================
+
+with tabs[3]:
+
+    st.subheader("Vinci Image Studio")
+
+    st.info(
+        "Uses an external image-generation service. "
+        "No paid Gemini image-generation API is activated."
+    )
+
+    image_prompt = st.text_area(
+        "Describe the image you want",
+        height=120
+    )
+
+    aspect = st.selectbox(
+        "Image format",
+        ["Square", "Portrait", "Landscape"]
+    )
+
+    dimensions = {
+        "Square": (1024, 1024),
+        "Portrait": (768, 1024),
+        "Landscape": (1024, 768)
+    }
+
+    if st.button("Generate image", type="primary"):
+
+        if not image_prompt.strip():
+            st.warning("Please enter an image description.")
+
+        else:
+            width, height = dimensions[aspect]
+
+            try:
+                with st.spinner("Generating image..."):
+                    result = generate_free_image(
+                        image_prompt,
+                        width,
+                        height
+                    )
+
+                # Validate the returned image before displaying it.
+                image = Image.open(io.BytesIO(result))
+                image.verify()
+
+                st.session_state.last_image = result
+                st.success("Image generated successfully.")
+
+            except Exception as error:
+                st.error(f"Image generation failed: {error}")
+
+    if st.session_state.last_image:
+
+        st.image(
+            st.session_state.last_image,
+            use_container_width=True
+        )
+
+        st.download_button(
+            "Download image",
+            data=st.session_state.last_image,
+            file_name="vinci_image.png",
+            mime="image/png"
+        )
+
+
+# ============================================================
+# DESIGN STUDIO
+# ============================================================
+
+with tabs[4]:
+
+    st.subheader("Engineering Design Studio")
+
+    st.warning(
+        "These are preliminary geometry and export tools. "
+        "They do not replace professional CAD or circuit simulation."
+    )
+
+    design = st.radio(
+        "Choose a workflow",
+        [
+            "3D Component",
+            "2D Dimensional Drawing",
+            "Circuit Design Brief"
+        ],
+        horizontal=True
+    )
+
+    if design == "3D Component":
+
+        c1, c2, c3 = st.columns(3)
+
+        length = c1.number_input(
+            "Length (mm)", min_value=1.0, value=100.0
+        )
+
+        width = c2.number_input(
+            "Width (mm)", min_value=1.0, value=60.0
+        )
+
+        height = c3.number_input(
+            "Height (mm)", min_value=1.0, value=25.0
+        )
+
+        if go is not None:
+
+            mesh = trimesh.creation.box(
+                extents=(length, width, height)
+            ) if trimesh is not None else None
+
+            if mesh is not None:
+
+                vertices = mesh.vertices
+                faces = mesh.faces
+
+                fig = go.Figure(
+                    data=[
+                        go.Mesh3d(
+                            x=vertices[:, 0],
+                            y=vertices[:, 1],
+                            z=vertices[:, 2],
+                            i=faces[:, 0],
+                            j=faces[:, 1],
+                            k=faces[:, 2],
+                            color="#37cce8",
+                            opacity=0.9
+                        )
+                    ]
+                )
+
+                fig.update_layout(
+                    height=420,
+                    scene=dict(aspectmode="data")
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
+
+        if st.button("Prepare STL export"):
+
+            try:
+                stl_data = make_stl(
+                    length,
+                    width,
+                    height
+                )
+
+                st.download_button(
+                    "Download STL",
+                    data=stl_data,
+                    file_name="vinci_component.stl",
+                    mime="model/stl"
+                )
+
+            except Exception as error:
+                st.error(f"STL export error: {error}")
+
+    elif design == "2D Dimensional Drawing":
+
+        length = st.number_input(
+            "Length (mm)", min_value=1.0, value=120.0
+        )
+
+        width = st.number_input(
+            "Width (mm)", min_value=1.0, value=80.0
+        )
+
+        st.metric(
+            "Surface area",
+            f"{length * width:,.2f} mm²"
+        )
+
+        if st.button("Prepare DXF export"):
+
+            try:
+                drawing = make_dxf(length, width)
+
+                st.download_button(
+                    "Download DXF",
+                    data=drawing,
+                    file_name="vinci_drawing.dxf",
+                    mime="application/dxf"
+                )
+
+            except Exception as error:
+                st.error(f"DXF export error: {error}")
+
+    else:
+
+        st.subheader("Circuit Design Documentation")
+
+        circuit_name = st.text_input("Circuit name")
+        purpose = st.text_area("Circuit purpose")
+        components = st.text_area("Components and ratings")
+        constraints = st.text_area("Design constraints")
+
+        if st.button("Prepare circuit design brief"):
+
+            brief = f"""# {circuit_name}
+
+## Purpose
+{purpose}
+
+## Components
+{components}
+
+## Design constraints
+{constraints}
+
+## Validation status
+Conceptual design documentation only.
+Not a validated circuit or simulation.
+"""
+
+            st.download_button(
+                "Download design brief",
+                data=brief,
+                file_name="vinci_circuit_design.md",
+                mime="text/markdown"
+            )
+
+
+# ============================================================
+# PROJECTS AND REMINDERS
+# ============================================================
+
+with tabs[5]:
+
+    st.subheader("JTEG Project Manager")
+
+    with st.form("project_form"):
+
+        project_name = st.text_input("Project name")
+        description = st.text_area("Project description")
+
+        submitted = st.form_submit_button("Save project")
+
+    if submitted:
+
+        if project_name.strip():
+
+            with database() as conn:
+                conn.execute(
+                    """INSERT INTO projects
+                    (name, description, status, created)
+                    VALUES (?, ?, ?, ?)""",
+                    (
+                        project_name,
+                        description,
+                        "Planning",
+                        timestamp()
+                    )
+                )
+
+            st.success("Project saved.")
+            st.rerun()
+
+        else:
+            st.warning("Enter a project name.")
+
+    with database() as conn:
+        projects = conn.execute(
+            "SELECT * FROM projects ORDER BY id DESC"
+        ).fetchall()
+
+    for project in projects:
+
+        with st.container(border=True):
+
+            st.markdown(f"**{project['name']}**")
+            st.write(project["description"])
+
+            statuses = [
+                "Planning",
+                "In progress",
+                "On hold",
+                "Completed"
+            ]
+
+            current_status = (
+                project["status"]
+                if project["status"] in statuses
+                else "Planning"
+            )
+
+            status = st.selectbox(
+                "Project status",
+                statuses,
+                index=statuses.index(current_status),
+                key=f"status_{project['id']}"
+            )
+
+            if status != project["status"]:
+
+                with database() as conn:
+                    conn.execute(
+                        "UPDATE projects SET status=? WHERE id=?",
+                        (status, project["id"])
+                    )
+
+                st.rerun()
+
+            if st.button(
+                "Delete project",
+                key=f"delete_project_{project['id']}"
+            ):
+
+                with database() as conn:
+                    conn.execute(
+                        "DELETE FROM projects WHERE id=?",
+                        (project["id"],)
+                    )
+
+                st.rerun()
+
+    st.divider()
+    st.subheader("Reminders")
+
+    with st.form("reminder_form"):
+
+        reminder_title = st.text_input("Reminder title")
+        reminder_due = st.date_input("Due date")
+        reminder_notes = st.text_area("Notes")
+
+        submitted = st.form_submit_button("Save reminder")
+
+    if submitted:
+
+        if reminder_title.strip():
+
+            with database() as conn:
+                conn.execute(
+                    """INSERT INTO reminders
+                    (title, due, notes, completed)
+                    VALUES (?, ?, ?, 0)""",
+                    (
+                        reminder_title,
+                        reminder_due.isoformat(),
+                        reminder_notes
+                    )
+                )
+
+            st.success("Reminder saved.")
+            st.rerun()
+
+        else:
+            st.warning("Enter a reminder title.")
+
+    with database() as conn:
+        reminders = conn.execute(
+            "SELECT * FROM reminders ORDER BY due"
+        ).fetchall()
+
+    for reminder in reminders:
+
+        with st.container(border=True):
+
+            st.markdown(f"**{reminder['title']}**")
+            st.caption(f"Due: {reminder['due']}")
+            st.write(reminder["notes"])
+
+            completed = st.checkbox(
+                "Completed",
+                value=bool(reminder["completed"]),
+                key=f"completed_{reminder['id']}"
+            )
+
+            if completed != bool(reminder["completed"]):
+
+                with database() as conn:
+                    conn.execute(
+                        "UPDATE reminders SET completed=? WHERE id=?",
+                        (int(completed), reminder["id"])
+                    )
+
+                st.rerun()
+
+            if st.button(
+                "Delete reminder",
+                key=f"delete_reminder_{reminder['id']}"
+            ):
+
+                with database() as conn:
+                    conn.execute(
+                        "DELETE FROM reminders WHERE id=?",
+                        (reminder["id"],)
+                    )
+
+                st.rerun()
+
+
+# ============================================================
+# DOCUMENT LIBRARY
+# ============================================================
+
+with tabs[6]:
+
+    st.subheader("Vinci Document Library")
+
+    document = st.file_uploader(
+        "Upload a document",
+        type=["pdf", "docx", "txt", "md", "csv"]
+    )
+
+    if document and st.button("Extract and save document"):
+
+        try:
+            content = extract_document(document)
+
+            if not content.strip():
+
+                st.warning(
+                    "No selectable text was found. "
+                    "Scanned documents require OCR."
+                )
+
+            else:
+
+                with database() as conn:
+                    conn.execute(
+                        """INSERT INTO documents
+                        (filename, content, created)
+                        VALUES (?, ?, ?)""",
+                        (
+                            document.name,
+                            content,
+                            timestamp()
+                        )
+                    )
+
+                st.session_state.document_context = content[:40000]
+                st.success("Document extracted and saved.")
+
+        except Exception as error:
+            st.error(f"Document extraction error: {error}")
+
+    with database() as conn:
+        documents = conn.execute(
+            "SELECT * FROM documents ORDER BY id DESC"
+        ).fetchall()
+
+    for doc in documents:
+
+        with st.expander(doc["filename"]):
+
+            st.text_area(
+                "Extracted content",
+                doc["content"][:12000],
+                height=200,
+                key=f"document_{doc['id']}"
+            )
+
+            if st.button(
+                "Use this document in chat",
+                key=f"use_document_{doc['id']}"
+            ):
+
+                st.session_state.document_context = (
+                    doc["content"][:40000]
+                )
+
+                st.success("Document context loaded.")
+
+            if st.button(
+                "Delete document",
+                key=f"delete_document_{doc['id']}"
+            ):
+
+                with database() as conn:
+                    conn.execute(
+                        "DELETE FROM documents WHERE id=?",
+                        (doc["id"],)
+                    )
+
+                st.rerun()
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+
+st.markdown("""
+<div style="text-align:center;color:#9bb5c7;padding:15px">
+    <b>VINCI AI</b><br>
+    JTEG INTELLIGENCE PLATFORM<br>
+    Engineering the systems that power modern civilization.
+</div>
+""", unsafe_allow_html=True)
+                        
