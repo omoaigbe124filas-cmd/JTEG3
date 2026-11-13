@@ -881,4 +881,1347 @@ def component_mesh(component, explosion=0.0, index=0):
         [
             x + shift,
             y,
+            z
+        ]
+    )
+
+    return mesh
+
+def render_3d_design(design, explosion=0.0):
+
+    figure = go.Figure()
+
+    for index, component in enumerate(
+        design["components"]
+    ):
+
+        mesh = component_mesh(
+            component,
+            explosion,
+            index
+        )
+
+        vertices = mesh.vertices
+        faces = mesh.faces
+
+        figure.add_trace(
+            go.Mesh3d(
+                x=vertices[:, 0],
+                y=vertices[:, 1],
+                z=vertices[:, 2],
+                i=faces[:, 0],
+                j=faces[:, 1],
+                k=faces[:, 2],
+                color=component["color"],
+                opacity=0.9,
+                name=component["name"],
+                hovertext=component["name"],
+                hoverinfo="text",
+                showlegend=True
+            )
+        )
+
+    figure.update_layout(
+        height=520,
+        margin=dict(l=0, r=0, t=20, b=0),
+        scene=dict(
+            aspectmode="data",
+            xaxis_title="X (mm)",
+            yaxis_title="Y (mm)",
+            zaxis_title="Z (mm)"
+        ),
+        legend=dict(
+            orientation="h",
+            y=-0.15
+        )
+    )
+
+    return figure
+
+def render_2d_exploded(design, separation=1.0):
+
+    figure = go.Figure()
+
+    for index, component in enumerate(
+        design["components"]
+    ):
+
+        x, y, z = component["position_mm"]
+        dx, dy, dz = component["dimensions_mm"]
+
+        shift = index * separation * max(dx, 25)
+
+        left = x + shift
+        right = left + dx
+
+        bottom = y
+        top = y + dy
+
+        figure.add_shape(
+            type="rect",
+            x0=left,
+            y0=bottom,
+            x1=right,
+            y1=top,
+            line=dict(
+                color=component["color"],
+                width=2
+            ),
+            fillcolor=component["color"],
+            opacity=0.45
+        )
+
+        figure.add_annotation(
+            x=(left + right) / 2,
+            y=top + 5,
+            text=component["name"],
+            showarrow=False,
+            font=dict(size=10)
+        )
+
+    figure.update_layout(
+        height=480,
+        title="Approximate 2D exploded component layout",
+        xaxis_title="X position (mm)",
+        yaxis_title="Y position (mm)",
+        showlegend=False
+    )
+
+    return figure
+
+# ============================================================
+# ENGINEERING EXPORTS
+# ============================================================
+
+def export_stl(design, explosion=0.0):
+
+    meshes = []
+
+    for index, component in enumerate(
+        design["components"]
+    ):
+
+        mesh = component_mesh(
+            component,
+            explosion,
+            index
+        )
+
+        meshes.append(mesh)
+
+    combined = trimesh.util.concatenate(meshes)
+
+    return combined.export(file_type="stl")
+
+def export_dxf(design):
+
+    if ezdxf is None:
+        raise RuntimeError("ezdxf is not installed.")
+
+    doc = ezdxf.new("R2010")
+    model = doc.modelspace()
+
+    for component in design["components"]:
+
+        x, y, z = component["position_mm"]
+        dx, dy, dz = component["dimensions_mm"]
+
+        model.add_lwpolyline(
+            [
+                (x, y),
+                (x + dx, y),
+                (x + dx, y + dy),
+                (x, y + dy),
+                (x, y)
+            ],
+            close=True
+        )
+
+        model.add_text(
+            component["name"],
+            dxfattribs={
+                "height": max(2, min(dx, dy) * 0.04),
+                "insert": (x, y + dy + 3)
+            }
+        )
+
+    output = io.StringIO()
+    doc.write(output)
+
+    return output.getvalue().encode("utf-8")
+
+# ============================================================
+# SIDEBAR — SLIDE-OUT WORKSPACE
+# ============================================================
+
+PAGES = [
+    "Chat",
+    "Research",
+    "Projects",
+    "Documents",
+    "Image Studio",
+    "Design Studio",
+    "Voice",
+    "Plugins",
+    "Settings"
+]
+
+with st.sidebar:
+
+    st.markdown("## 🤖 Vinci AI")
+    st.caption("JTEG Intelligence Platform")
+
+    if GEMINI_KEY:
+        st.success("Gemini connected")
+    else:
+        st.error("Gemini API key missing")
+
+    st.divider()
+
+    if st.button("＋ New chat", use_container_width=True):
+
+        st.session_state.cid = create_conversation()
+        st.session_state.document_context = ""
+        st.rerun()
+
+    st.markdown("### Workspace")
+
+    page = st.radio(
+        "Navigation",
+        PAGES,
+        key="page",
+        label_visibility="collapsed"
+    )
+
+    st.divider()
+
+    st.markdown("### Conversation history")
+
+    for item in get_conversations():
+
+        if st.button(
+            item["title"][:32],
+            key=f"conversation_{item['id']}",
+            use_container_width=True
+        ):
+
+            st.session_state.cid = item["id"]
+            st.session_state.page = "Chat"
+            st.rerun()
+
+        if st.button(
+            "Delete",
+            key=f"delete_conversation_{item['id']}"
+        ):
+
+            delete_conversation(item["id"])
+
+            if item["id"] == st.session_state.cid:
+                st.session_state.cid = create_conversation()
+
+            st.rerun()
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown("""
+<div class="hero">
+    <div class="hero-label">
+        JOSIAH TECHNOLOGIES AND ENGINEERING GROUP
+    </div>
+    <h1 style="color:white;margin:5px 0">
+        Vinci AI
+    </h1>
+    <h3 style="color:#55dff5;margin:0">
+        JTEG Intelligence Platform
+    </h3>
+    <p class="muted">
+        Engineering knowledge. Research. Design. Intelligence.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+st.write("")
+
+# ============================================================
+# CHAT WORKSPACE
+# ============================================================
+
+if page == "Chat":
+
+    st.subheader("Chat")
+
+    for message in get_messages(st.session_state.cid):
+
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    attachment = st.file_uploader(
+        "Attach an image or document",
+        type=[
+            "pdf", "docx", "txt", "md",
+            "csv", "png", "jpg", "jpeg", "webp"
+        ],
+        key="chat_attachment"
+    )
+
+    image_bytes = None
+    image_mime = "image/jpeg"
+
+    if attachment:
+
+        suffix = Path(attachment.name).suffix.lower()
+
+        if suffix in [".png", ".jpg", ".jpeg", ".webp"]:
+
+            image_bytes = attachment.getvalue()
+            image_mime = attachment.type or image_mime
+
+            st.image(
+                image_bytes,
+                width=220
+            )
+
+        else:
+
+            try:
+
+                st.session_state.document_context = (
+                    extract_document(attachment)[:30000]
+                )
+
+                st.success("Document extracted.")
+
+            except Exception as error:
+                st.error(str(error))
+
+    prompt = st.chat_input(
+        "Message Vinci AI..."
+    )
+
+    if prompt:
+
+        save_message(
+            st.session_state.cid,
+            "user",
+            prompt
+        )
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+
+            with st.spinner("Vinci is thinking..."):
+
+                try:
+
+                    answer = ask_vinci(
+                        st.session_state.cid,
+                        prompt,
+                        image_bytes,
+                        image_mime,
+                        st.session_state.document_context
+                    )
+
+                    st.markdown(answer)
+
+                    save_message(
+                        st.session_state.cid,
+                        "assistant",
+                        answer
+                    )
+
+                except Exception as error:
+
+                    st.error(
+                        f"Gemini error: {error}"
+                    )
+
+        st.rerun()
+
+# ============================================================
+# RESEARCH WORKSPACE
+# ============================================================
+
+elif page == "Research":
+
+    st.subheader("Research")
+
+    query = st.text_input(
+        "What would you like Vinci to research?"
+    )
+
+    limit = st.slider(
+        "Number of sources",
+        3,
+        10,
+        6
+    )
+
+    if st.button("Search research sources"):
+
+        if query.strip():
+
+            try:
+
+                with st.spinner("Searching..."):
+
+                    results = research_web(
+                        query,
+                        limit
+                    )
+
+                st.session_state.research_results = results
+
+            except Exception as error:
+                st.error(str(error))
+
+    results = st.session_state.research_results
+
+    if results:
+
+        research_text = []
+
+        for index, item in enumerate(results, 1):
+
+            research_text.append(
+                f"[S{index}] {item['title']}\n"
+                f"{item['url']}\n"
+                f"{item['body']}"
+            )
+
+            with st.container(border=True):
+
+                st.markdown(
+                    f"**[S{index}] {item['title']}**"
+                )
+
+                st.write(item["body"])
+
+                if item["url"]:
+                    st.markdown(
+                        f"[Open source]({item['url']})"
+                    )
+
+        if st.button("Use Vinci to analyze results"):
+
+            prompt = (
+                "Analyze these research results. "
+                "Explain the findings, compare the evidence, "
+                "identify limitations and cite the sources "
+                "using their S numbers:\n\n"
+                + "\n\n".join(research_text)
+            )
+
+            save_message(
+                st.session_state.cid,
+                "user",
+                "Analyze the research results."
+            )
+
+            try:
+
+                with st.spinner("Analyzing research..."):
+
+                    answer = ask_vinci(
+                        st.session_state.cid,
+                        "Analyze the supplied research sources."
+                    )
+
+                # The sources are added as a separate user turn
+                # to avoid losing them from the model context.
+                response = gemini_request([
+                    types.Part.from_text(
+                        text=SYSTEM_PROMPT
+                    ),
+                    types.Part.from_text(
+                        text=prompt
+                    )
+                ])
+
+                answer = response.text or answer
+
+                save_message(
+                    st.session_state.cid,
+                    "assistant",
+                    answer
+                )
+
+                st.markdown(answer)
+
+            except Exception as error:
+                st.error(str(error))
+
+# ============================================================
+# PROJECTS
+# ============================================================
+
+elif page == "Projects":
+
+    st.subheader("JTEG Project Manager")
+
+    with st.form("project_form"):
+
+        name = st.text_input("Project name")
+        description = st.text_area("Project description")
+
+        submitted = st.form_submit_button("Save project")
+
+    if submitted:
+
+        if name.strip():
+
+            with database() as conn:
+
+                conn.execute(
+                    """
+                    INSERT INTO projects(
+                        name, description, status, created
+                    )
+                    VALUES(?,?,?,?)
+                    """,
+                    (
+                        name,
+                        description,
+                        "Planning",
+                        now()
+                    )
+                )
+
+            st.success("Project saved.")
+            st.rerun()
+
+    with database() as conn:
+
+        projects = conn.execute(
+            "SELECT * FROM projects ORDER BY id DESC"
+        ).fetchall()
+
+    for project in projects:
+
+        with st.container(border=True):
+
+            st.markdown(f"**{project['name']}**")
+            st.write(project["description"])
+
+            statuses = [
+                "Planning",
+                "In progress",
+                "On hold",
+                "Completed"
+            ]
+
+            status = st.selectbox(
+                "Status",
+                statuses,
+                index=(
+                    statuses.index(project["status"])
+                    if project["status"] in statuses
+                    else 0
+                ),
+                key=f"project_status_{project['id']}"
+            )
+
+            if status != project["status"]:
+
+                with database() as conn:
+
+                    conn.execute(
+                        "UPDATE projects SET status=? WHERE id=?",
+                        (status, project["id"])
+                    )
+
+                st.rerun()
+
+            if st.button(
+                "Delete project",
+                key=f"project_delete_{project['id']}"
+            ):
+
+                with database() as conn:
+
+                    conn.execute(
+                        "DELETE FROM projects WHERE id=?",
+                        (project["id"],)
+                    )
+
+                st.rerun()
+
+    st.divider()
+
+    st.subheader("Reminders")
+
+    with st.form("reminder_form"):
+
+        title = st.text_input("Reminder title")
+        due = st.date_input("Due date")
+        notes = st.text_area("Notes")
+
+        submitted = st.form_submit_button("Save reminder")
+
+    if submitted and title.strip():
+
+        with database() as conn:
+
+            conn.execute(
+                """
+                INSERT INTO reminders(title,due,notes)
+                VALUES(?,?,?)
+                """,
+                (
+                    title,
+                    due.isoformat(),
+                    notes
+                )
+            )
+
+        st.success("Reminder saved.")
+        st.rerun()
+
+    with database() as conn:
+
+        reminders = conn.execute(
+            "SELECT * FROM reminders ORDER BY due"
+        ).fetchall()
+
+    for reminder in reminders:
+
+        with st.container(border=True):
+
+            st.write(reminder["title"])
+            st.caption(reminder["due"])
+            st.write(reminder["notes"])
+
+            done = st.checkbox(
+                "Completed",
+                value=bool(reminder["completed"]),
+                key=f"reminder_{reminder['id']}"
+            )
+
+            if done != bool(reminder["completed"]):
+
+                with database() as conn:
+
+                    conn.execute(
+                        "UPDATE reminders SET completed=? WHERE id=?",
+                        (int(done), reminder["id"])
+                    )
+
+                st.rerun()
+
+# ============================================================
+# DOCUMENT LIBRARY
+# ============================================================
+
+elif page == "Documents":
+
+    st.subheader("Document Library")
+
+    upload = st.file_uploader(
+        "Upload PDF, Word or text document",
+        type=["pdf", "docx", "txt", "md", "csv"]
+    )
+
+    if upload and st.button("Extract and save"):
+
+        try:
+
+            content = extract_document(upload)
+
+            if not content.strip():
+
+                st.warning(
+                    "No selectable text found. "
+                    "Scanned documents require OCR."
+                )
+
+            else:
+
+                with database() as conn:
+
+                    conn.execute(
+                        """
+                        INSERT INTO documents(
+                            filename,content,created
+                        )
+                        VALUES(?,?,?)
+                        """,
+                        (
+                            upload.name,
+                            content,
+                            now()
+                        )
+                    )
+
+                st.success("Document saved.")
+
+        except Exception as error:
+            st.error(str(error))
+
+    with database() as conn:
+
+        documents = conn.execute(
+            "SELECT * FROM documents ORDER BY id DESC"
+        ).fetchall()
+
+    for document in documents:
+
+        with st.expander(document["filename"]):
+
+            st.text_area(
+                "Extracted text",
+                document["content"][:15000],
+                height=200,
+                key=f"document_view_{document['id']}"
+            )
+
+            if st.button(
+                "Load into chat",
+                key=f"document_load_{document['id']}"
+            ):
+
+                st.session_state.document_context = (
+                    document["content"][:30000]
+                )
+
+                st.success(
+                    "Document loaded. Open Chat to use it."
+                )
+
+            if st.button(
+                "Delete document",
+                key=f"document_delete_{document['id']}"
+            ):
+
+                with database() as conn:
+
+                    conn.execute(
+                        "DELETE FROM documents WHERE id=?",
+                        (document["id"],)
+                    )
+
+                st.rerun()
+
+# ============================================================
+# IMAGE STUDIO
+# ============================================================
+
+elif page == "Image Studio":
+
+    st.subheader("Vinci Image Studio")
+
+    st.info(
+        "Uses an external best-effort image service. "
+        "No paid Gemini image generation is activated."
+    )
+
+    prompt = st.text_area(
+        "Describe the image",
+        height=120
+    )
+
+    aspect = st.selectbox(
+        "Image format",
+        ["Square", "Portrait", "Landscape"]
+    )
+
+    sizes = {
+        "Square": (1024, 1024),
+        "Portrait": (768, 1024),
+        "Landscape": (1024, 768)
+    }
+
+    if st.button("Generate image"):
+
+        if not prompt.strip():
+
+            st.warning("Enter an image description.")
+
+        else:
+
+            width, height = sizes[aspect]
+
+            try:
+
+                with st.spinner("Generating..."):
+
+                    image_data = generate_free_image(
+                        prompt,
+                        width,
+                        height
+                    )
+
+                st.session_state.last_image = image_data
+
+            except Exception as error:
+                st.error(str(error))
+
+    if st.session_state.last_image:
+
+        st.image(
+            st.session_state.last_image,
+            use_container_width=True
+        )
+
+        st.download_button(
+            "Download image",
+            st.session_state.last_image,
+            "vinci_image.png",
+            "image/png"
+        )
+
+# ============================================================
+# DESIGN STUDIO
+# ============================================================
+
+elif page == "Design Studio":
+
+    st.subheader("Engineering Design Studio")
+
+    workflow = st.radio(
+        "Design workflow",
+        ["3D Modeling", "2D Drawing"],
+        horizontal=True
+    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # MANUAL 3D DESIGN
+    # --------------------------------------------------------
+
+    if workflow == "3D Modeling":
+
+        st.markdown("### Parametric 3D component")
+
+        with st.form("3d_dimensions_form"):
+
+            c1, c2, c3 = st.columns(3)
+
+            length = c1.number_input(
+                "Length (mm)",
+                min_value=1.0,
+                max_value=5000.0,
+                value=300.0
+            )
+
+            width = c2.number_input(
+                "Width (mm)",
+                min_value=1.0,
+                max_value=5000.0,
+                value=200.0
+            )
+
+            height = c3.number_input(
+                "Height (mm)",
+                min_value=1.0,
+                max_value=5000.0,
+                value=900.0
+            )
+
+            create = st.form_submit_button(
+                "Generate 3D model"
+            )
+
+        if create:
+
+            st.session_state.design_result = {
+                "name": "Custom component",
+                "confidence": "User-defined dimensions",
+                "components": [
+                    {
+                        "name": "Main housing",
+                        "primitive": "box",
+                        "dimensions_mm": [
+                            length,
+                            width,
+                            height
+                        ],
+                        "position_mm": [0, 0, 0],
+                        "color": "#38a9d8",
+                        "description": "Main enclosure"
+                    }
+                ]
+            }
+
+        design = st.session_state.design_result
+
+        if design:
+
+            st.markdown("### 3D preview")
+
+            separation = st.slider(
+                "Exploded view separation",
+                0.0,
+                150.0,
+                0.0,
+                key="manual_explode"
+            )
+
+            figure = render_3d_design(
+                design,
+                separation
+            )
+
+            st.plotly_chart(
+                figure,
+                use_container_width=True,
+                key="manual_3d_preview"
+            )
+
+            st.write("### Components")
+
+            for item in design["components"]:
+                st.write(
+                    f"**{item['name']}** — "
+                    f"{item['dimensions_mm']} mm"
+                )
+
+            if st.button("Prepare STL file"):
+
+                try:
+
+                    st.session_state.stl_file = export_stl(
+                        design,
+                        separation
+                    )
+
+                except Exception as error:
+                    st.error(str(error))
+
+            if st.session_state.get("stl_file"):
+
+                st.download_button(
+                    "Download STL",
+                    st.session_state.stl_file,
+                    "vinci_model.stl",
+                    "model/stl"
+                )
+
+    # --------------------------------------------------------
+    # 2D DESIGN
+    # --------------------------------------------------------
+
+    else:
+
+        st.markdown("### 2D dimensional drawing")
+
+        with st.form("2d_dimensions_form"):
+
+            length = st.number_input(
+                "Length (mm)",
+                min_value=1.0,
+                value=300.0
+            )
+
+            width = st.number_input(
+                "Width (mm)",
+                min_value=1.0,
+                value=200.0
+            )
+
+            create = st.form_submit_button(
+                "Generate drawing"
+            )
+
+        if create:
+
+            st.session_state.design_result = {
+                "name": "2D rectangular component",
+                "confidence": "User-defined dimensions",
+                "components": [
+                    {
+                        "name": "Main body",
+                        "primitive": "box",
+                        "dimensions_mm": [
+                            length,
+                            width,
+                            20.0
+                        ],
+                        "position_mm": [0, 0, 0],
+                        "color": "#42a9d9",
+                        "description": "Main body"
+                    }
+                ]
+            }
+
+        design = st.session_state.design_result
+
+        if design:
+
+            separation = st.slider(
+                "2D exploded separation",
+                0.0,
+                2.0,
+                1.0
+            )
+
+            figure = render_2d_exploded(
+                design,
+                separation
+            )
+
+            st.plotly_chart(
+                figure,
+                use_container_width=True
+            )
+
+            if st.button("Prepare DXF file"):
+
+                try:
+
+                    st.session_state.dxf_file = export_dxf(
+                        design
+                    )
+
+                except Exception as error:
+                    st.error(str(error))
+
+            if st.session_state.get("dxf_file"):
+
+                st.download_button(
+                    "Download DXF",
+                    st.session_state.dxf_file,
+                    "vinci_drawing.dxf",
+                    "application/dxf"
+                )
+
+    # --------------------------------------------------------
+    # PHOTO-TO-DESIGN WORKSPACE
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.markdown("### Photo-to-Design")
+    st.caption(
+        "Upload a photograph of an object for AI-assisted "
+        "component analysis and approximate design."
+    )
+
+    left, right = st.columns([1, 2])
+
+    with left:
+
+        design_photo = st.file_uploader(
+            "Upload engineering photograph",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="design_photo"
+        )
+
+        if design_photo:
+
+            st.image(
+                design_photo,
+                use_container_width=True
+            )
+
+        analyze_button = st.button(
+            "Analyze photograph",
+            type="primary"
+        )
+
+    with right:
+
+        st.markdown("**Analysis capabilities**")
+
+        st.write(
+            "- Identify visible components.\n"
+            "- Estimate approximate dimensions.\n"
+            "- Generate an editable component breakdown.\n"
+            "- Produce an approximate 3D assembly.\n"
+            "- Create a 2D exploded component diagram."
+        )
+
+    if analyze_button:
+
+        if not design_photo:
+
+            st.warning("Upload a photograph first.")
+
+        else:
+
+            try:
+
+                with st.spinner(
+                    "Vinci is analyzing the engineering object..."
+                ):
+
+                    result = analyze_design_photo(
+                        design_photo
+                    )
+
+                st.session_state.design_result = result
+
+                st.success("Component analysis completed.")
+
+            except Exception as error:
+
+                st.error(
+                    f"Photo analysis failed: {error}"
+                )
+
+    design = st.session_state.design_result
+
+    if design and design.get("components"):
+
+        st.divider()
+
+        st.markdown(
+            f"### {design['name']}"
+        )
+
+        st.caption(
+            "Dimensions and internal components are estimates "
+            "unless independently measured."
+        )
+
+        for index, component in enumerate(
+            design["components"],
+            1
+        ):
+
+            with st.expander(
+                f"{index}. {component['name']}"
+            ):
+
+                st.write(
+                    "Type:",
+                    component["primitive"]
+                )
+
+                st.write(
+                    "Dimensions (mm):",
+                    component["dimensions_mm"]
+                )
+
+                st.write(
+                    "Position (mm):",
+                    component["position_mm"]
+                )
+
+                st.write(
+                    component["description"]
+                )
+
+        if workflow == "3D Modeling":
+
+            st.markdown("### Interactive 3D assembly")
+
+            explode = st.slider(
+                "Explode components",
+                0.0,
+                200.0,
+                0.0,
+                key="photo_3d_explode"
+            )
+
+            figure = render_3d_design(
+                design,
+                explode
+            )
+
+            st.plotly_chart(
+                figure,
+                use_container_width=True,
+                key="photo_3d_figure"
+            )
+
+            if st.button("Prepare photo-based STL"):
+
+                try:
+
+                    st.session_state.photo_stl = export_stl(
+                        design,
+                        explode
+                    )
+
+                except Exception as error:
+                    st.error(str(error))
+
+            if st.session_state.get("photo_stl"):
+
+                st.download_button(
+                    "Download 3D STL",
+                    st.session_state.photo_stl,
+                    "vinci_exploded_model.stl",
+                    "model/stl"
+                )
+
+        else:
+
+            st.markdown("### 2D exploded breakdown")
+
+            separation = st.slider(
+                "Component separation",
+                0.0,
+                2.0,
+                1.0,
+                key="photo_2d_explode"
+            )
+
+            figure = render_2d_exploded(
+                design,
+                separation
+            )
+
+            st.plotly_chart(
+                figure,
+                use_container_width=True
+            )
+
+            if st.button("Prepare photo-based DXF"):
+
+                try:
+
+                    st.session_state.photo_dxf = export_dxf(
+                        design
+                    )
+
+                except Exception as error:
+                    st.error(str(error))
+
+            if st.session_state.get("photo_dxf"):
+
+                st.download_button(
+                    "Download 2D DXF",
+                    st.session_state.photo_dxf,
+                    "vinci_exploded_drawing.dxf",
+                    "application/dxf"
+                )
+
+# ============================================================
+# VOICE
+# ============================================================
+
+elif page == "Voice":
+
+    st.subheader("Vinci Voice")
+
+    st.info(
+        "Push-to-talk voice input. This is not a continuous "
+        "real-time voice connection."
+    )
+
+    audio = st.audio_input("Record a message")
+
+    if audio and st.button("Transcribe and send"):
+
+        try:
+
+            transcript = transcribe_audio(audio)
+
+            st.write("**Transcription:**")
+            st.write(transcript)
+
+            if transcript.strip():
+
+                save_message(
+                    st.session_state.cid,
+                    "user",
+                    transcript
+                )
+
+                answer = ask_vinci(
+                    st.session_state.cid,
+                    transcript
+                )
+
+                save_message(
+                    st.session_state.cid,
+                    "assistant",
+                    answer
+                )
+
+                st.session_state.voice_answer = answer
+
+                st.markdown(answer)
+
+        except Exception as error:
+            st.error(str(error))
+
+    if st.session_state.voice_answer:
+
+        if st.button("Read answer aloud"):
+
+            try:
+
+                audio_data = make_speech(
+                    st.session_state.voice_answer
+                )
+
+                st.audio(
+                    audio_data,
+                    format="audio/mp3"
+                )
+
+            except Exception as error:
+                st.error(str(error))
+
+# ============================================================
+# PLUGINS
+# ============================================================
+
+elif page == "Plugins":
+
+    st.subheader("Vinci Extensions")
+
+    st.info(
+        "The plugin workspace is prepared for future integrations. "
+        "No external plugin is connected automatically."
+    )
+
+    with st.container(border=True):
+
+        st.markdown("**Gemini Intelligence Engine**")
+        st.write("Primary AI provider: Google Gemini")
+
+        st.markdown("**Research tools**")
+        st.write("Web search integration")
+
+        st.markdown("**Engineering tools**")
+        st.write("Plotly, Trimesh and DXF export")
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+elif page == "Settings":
+
+    st.subheader("Vinci AI Settings")
+
+    st.write("**Platform:** JTEG Intelligence Platform")
+    st.write("**AI provider:** Google Gemini")
+    st.write("**Chat model:**", GEMINI_MODEL)
+
+    st.write(
+        "**Database:**",
+        str(DB_PATH)
+    )
+
+    if GEMINI_KEY:
+        st.success("Gemini API key is configured.")
+    else:
+        st.error("Gemini API key is not configured.")
+
+    st.caption(
+        "Keep your API key in Streamlit Secrets. "
+        "Never publish it in your GitHub source code."
+    )
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+
+st.markdown("""
+<div style="text-align:center;color:#91afc4;padding:16px">
+    <b>VINCI AI</b><br>
+    JTEG INTELLIGENCE PLATFORM<br>
+    Made in Nigeria. Built for the World.
+</div>
+""", unsafe_allow_html=True)
+
     
