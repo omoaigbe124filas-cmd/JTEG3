@@ -35,7 +35,6 @@ try:
 except ImportError:
     ezdxf = None
 
-
 # ============================================================
 # VINCI AI — JTEG INTELLIGENCE PLATFORM
 # ============================================================
@@ -79,7 +78,6 @@ safety-focused explanations rather than dangerous hands-on
 construction or live-testing instructions.
 Recommend qualified professional supervision.
 """
-
 
 # ============================================================
 # VISUAL DESIGN
@@ -178,7 +176,6 @@ h1, h2, h3 {
 </style>
 """, unsafe_allow_html=True)
 
-
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -192,9 +189,7 @@ def get_secret(name):
     except Exception:
         return os.getenv(name, "")
 
-
 GEMINI_KEY = get_secret("GEMINI_API_KEY")
-
 
 @st.cache_resource
 def get_gemini_client():
@@ -202,7 +197,6 @@ def get_gemini_client():
         return None
 
     return genai.Client(api_key=GEMINI_KEY)
-
 
 def gemini_request(contents, model=GEMINI_MODEL):
     client = get_gemini_client()
@@ -222,7 +216,6 @@ def gemini_request(contents, model=GEMINI_MODEL):
         )
     )
 
-
 # ============================================================
 # DATABASE
 # ============================================================
@@ -231,7 +224,6 @@ DATA_DIR = Path("vinci_data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "vinci.sqlite3"
-
 
 def database():
     conn = sqlite3.connect(
@@ -242,10 +234,8 @@ def database():
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
-
 def now():
     return datetime.now(timezone.utc).isoformat()
-
 
 def initialize_database():
 
@@ -295,9 +285,7 @@ def initialize_database():
         );
         """)
 
-
 initialize_database()
-
 
 # ============================================================
 # DATABASE FUNCTIONS
@@ -313,7 +301,6 @@ def create_conversation():
         )
 
         return cursor.lastrowid
-
 
 def save_message(cid, role, content):
 
@@ -352,7 +339,6 @@ def save_message(cid, role, content):
                     (title, cid)
                 )
 
-
 def get_messages(cid):
 
     with database() as conn:
@@ -366,7 +352,6 @@ def get_messages(cid):
             (cid,)
         ).fetchall()
 
-
 def get_conversations():
 
     with database() as conn:
@@ -379,7 +364,6 @@ def get_conversations():
             """
         ).fetchall()
 
-
 def delete_conversation(cid):
 
     with database() as conn:
@@ -388,7 +372,6 @@ def delete_conversation(cid):
             "DELETE FROM conversations WHERE id=?",
             (cid,)
         )
-
 
 # ============================================================
 # SESSION STATE
@@ -412,7 +395,6 @@ for key, value in DEFAULTS.items():
 
 if st.session_state.cid is None:
     st.session_state.cid = create_conversation()
-
 
 # ============================================================
 # GEMINI CONVERSATION ENGINE
@@ -464,7 +446,6 @@ def build_history(cid, additional_document=""):
         )
 
     return contents
-
 
 def ask_vinci(
     cid,
@@ -522,7 +503,6 @@ def ask_vinci(
 
     return response.text or "Vinci could not generate a response."
 
-
 def analyze_image_with_gemini(image_bytes, mime_type, prompt):
 
     contents = [
@@ -536,7 +516,6 @@ def analyze_image_with_gemini(image_bytes, mime_type, prompt):
     response = gemini_request(contents)
 
     return response.text or ""
-
 
 # ============================================================
 # DOCUMENT EXTRACTION
@@ -598,7 +577,6 @@ def extract_document(upload):
 
     raise ValueError("Unsupported document format.")
 
-
 # ============================================================
 # WEB RESEARCH
 # ============================================================
@@ -626,7 +604,6 @@ def research_web(query, limit=6):
         }
         for item in results
     ]
-
 
 # ============================================================
 # FREE IMAGE GENERATION
@@ -662,7 +639,6 @@ def generate_free_image(prompt, width=1024, height=1024):
 
     return response.content
 
-
 # ============================================================
 # VOICE
 # ============================================================
@@ -683,7 +659,6 @@ def transcribe_audio(audio):
     ])
 
     return response.text or ""
-
 
 def make_speech(text):
 
@@ -718,7 +693,6 @@ def make_speech(text):
 
         finally:
             loop.close()
-
 
 # ============================================================
 # DESIGN STUDIO — AI IMAGE ANALYSIS
@@ -766,7 +740,6 @@ Rules:
 - Use simple, editable geometry.
 """
 
-
 def parse_design_json(text):
 
     text = text.strip()
@@ -791,7 +764,6 @@ def parse_design_json(text):
         raise ValueError("AI did not return valid JSON.")
 
     return json.loads(text[start:end + 1])
-
 
 def validate_design(data):
 
@@ -856,7 +828,6 @@ def validate_design(data):
         "components": clean
     }
 
-
 def analyze_design_photo(upload):
 
     image_bytes = upload.getvalue()
@@ -871,7 +842,6 @@ def analyze_design_photo(upload):
     design = parse_design_json(result)
 
     return validate_design(design)
-
 
 # ============================================================
 # 3D GEOMETRY
@@ -909,4 +879,6 @@ def component_mesh(component, explosion=0.0, index=0):
 
     mesh.apply_translation(
         [
-            
+            x + shift,
+            y,
+    
