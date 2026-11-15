@@ -420,4 +420,413 @@ def extract_document(upload):
         return "\n".join(lines)
     if name.endswith((".txt",".md",".csv",".json",".py")):
         return data.decode("utf-8",errors="replace")
-    
+    raise ValueError("Unsupported document type.")
+
+def free_image(prompt, width, height):
+    url = "https://image.pollinations.ai/prompt/"+urllib.parse.quote(prompt,safe="")+f"?width={width}&height={height}&model=flux&nologo=true&safe=true"
+    with httpx.Client(timeout=180,follow_redirects=True) as client:
+        r=client.get(url); r.raise_for_status()
+    Image.open(io.BytesIO(r.content)).verify()
+    return r.content
+
+def research(query, limit):
+    if DDGS is None: raise RuntimeError("ddgs is not installed.")
+    with DDGS() as ddgs:
+        rows=ddgs.text(query,max_results=limit)
+    return [{"title":x.get("title",""),"url":x.get("href",""),"body":x.get("body","")} for x in rows]
+
+def make_speech(text):
+    if edge_tts is None: raise RuntimeError("edge-tts is not installed.")
+    async def run():
+        comm=edge_tts.Communicate(text,"en-NG-AbeoNeural")
+        out=bytearray()
+        async for chunk in comm.stream():
+            if chunk["type"]=="audio": out.extend(chunk["data"])
+        return bytes(out)
+    try: return asyncio.run(run())
+    except RuntimeError:
+        loop=asyncio.new_event_loop()
+        try: return loop.run_until_complete(run())
+        finally: loop.close()
+
+# --------------------------- DC Circuit Lab (built-in solver) ---------------------------
+# Deliberately uses NumPy already required by Streamlit; no PySpice/Ngspice,
+# serial hardware access, or external schematic package is required.
+def solve_dc(resistors, sources, ground="0"):
+    nodes=set()
+    for a,b,_ in resistors: nodes.update([a,b])
+    for a,b,_ in sources: nodes.update([a,b])
+    nodes.discard(ground)
+    nodes=sorted(nodes)
+    if not nodes: return {ground:0.0}, []
+    # Modified nodal analysis: node voltages + ideal voltage-source currents.
+    import numpy as np
+    n,m=len(nodes),len(sources)
+    index={node:i for i,node in enumerate(nodes)}
+    A=np.zeros((n+m,n+m),dtype=float); z=np.zeros(n+m,dtype=float)
+    for a,b,r in resistors:
+        r=float(r)
+        if r<=0: raise ValueError("Resistance must be greater than zero.")
+        g=1.0/r
+        if a!=ground: A[index[a],index[a]]+=g
+        if b!=ground: A[index[b],index[b]]+=g
+        if a!=ground and b!=ground:
+            A[index[a],index[b]]-=g; A[index[b],index[a]]-=g
+    for k,(a,b,v) in enumerate(sources):
+        col=n+k
+        if a!=ground: A[index[a],col]+=1; A[col,index[a]]+=1
+        if b!=ground: A[index[b],col]-=1; A[col,index[b]]-=1
+        z[col]=float(v)
+    try: x=np.linalg.solve(A,z)
+    except Exception as e: raise ValueError("Circuit has no unique DC solution. Check floating nodes, shorts and source connections.") from e
+    volts={ground:0.0}
+    volts.update({node:float(x[i]) for node,i in index.items()})
+    currents=[]
+    for a,b,r in resistors:
+        currents.append({"from":a,"to":b,"resistance":float(r),
+                         "current_A":(volts[a]-volts[b])/float(r)})
+    return volts,currents
+
+def draw_circuit(resistors,sources,volts):
+    fig=go.Figure()
+    nodes=set()
+    for a,b,r in resistors: nodes.update([a,b])
+    for a,b,v in sources: nodes.update([a,b])
+    ordered=sorted(nodes)
+    pos={node:(i,0) for i,node in enumerate(ordered)}
+    for a,b,r in resistors:
+        x1,y1=pos[a]; x2,y2=pos[b]
+        fig.add_trace(go.Scatter(x=[x1,x2],y=[y1,y2],mode="lines+text",
+            text=["",f"{r:g} Ω"],textposition="top center",name=f"R {r:g}Ω",
+            line=dict(width=4,color="#39c8e8")))
+    for a,b,v in sources:
+        x1,y1=pos[a]; x2,y2=pos[b]
+        fig.add_trace(go.Scatter(x=[x1,x2],y=[y1-.12,y2-.12],mode="lines+text",
+            text=["",f"{v:g} V"],textposition="bottom center",name="Voltage source",
+            line=dict(width=3,dash="dot",color="#e7b95a")))
+    for node,(x,y) in pos.items():
+        fig.add_trace(go.Scatter(x=[x],y=[y],mode="markers+text",
+            text=[f"{node}  ({volts.get(node,0):.3g} V)"],textposition="top center",
+            marker=dict(size=12),showlegend=False))
+    fig.update_layout(height=300,margin=dict(l=10,r=10,t=20,b=20),
+        xaxis=dict(visible=False),yaxis=dict(visible=False),showlegend=False)
+    return fig
+
+# --------------------------- Session defaults ---------------------------
+for key, default in {
+    "cid":None,"page":"Chat","document_context":"","last_image":None,
+    "voice_answer":"","research_results":[],"design_result":None
+}.items():
+    if key not in st.session_state: st.session_state[key]=default
+if st.session_state.cid is None or not owned_conversation(st.session_state.cid):
+    st.session_state.cid=create_conversation()
+
+# --------------------------- Sidebar ---------------------------
+PAGES=["Chat","Voice","Image Studio","Design Studio","DC Circuit Lab","Research","Projects","Documents","Settings"]
+with st.sidebar:
+    if LOGO_PATH.exists(): st.image(str(LOGO_PATH),use_container_width=True)
+    st.markdown("## 🤖 Vinci AI")
+    st.caption("JTEG Intelligence Platform")
+    st.caption(f"Signed in: {USER['full_name']}")
+    if GEMINI_KEY: st.success("Gemini configured")
+    else: st.warning("Gemini API key missing")
+    if st.button("＋ New chat",use_container_width=True):
+        st.session_state.cid=create_conversation(); st.session_state.page="Chat"; st.rerun()
+    st.radio("Workspace",PAGES,key="page",label_visibility="collapsed")
+    st.divider()
+    st.markdown("### Your conversations")
+    for item in user_conversations():
+        a,b=st.columns([4,1])
+        if a.button(item["title"][:26],key=f"open_{item['id']}",use_container_width=True):
+            st.session_state.cid=item["id"]; st.session_state.page="Chat"; st.rerun()
+        if b.button("×",key=f"del_{item['id']}"):
+            with db() as c: c.execute("DELETE FROM conversations WHERE id=? AND user_id=?",(item["id"],UID))
+            if item["id"]==st.session_state.cid: st.session_state.cid=create_conversation()
+            st.rerun()
+    st.divider()
+    if IS_ADMIN:
+        st.caption("Administrator account")
+        if st.button("Admin dashboard",use_container_width=True):
+            st.session_state.page="Admin"; st.rerun()
+    if st.button("Log out",use_container_width=True):
+        st.session_state.auth_user=None
+        for k in ["cid","document_context","pending_email","reset_email"]:
+            st.session_state.pop(k,None)
+        st.rerun()
+
+# --------------------------- Header ---------------------------
+st.markdown('<div class="hero"><div class="muted">JOSIAH TECHNOLOGIES AND ENGINEERING GROUP</div><h1 style="margin:4px 0;color:white">VINCI AI</h1><h3 style="margin:0;color:#55dff5">JTEG Intelligence Platform</h3><p class="muted">Engineering knowledge. Research. Design. Intelligence.</p></div>',unsafe_allow_html=True)
+
+page=st.session_state.page
+
+# --------------------------- Chat ---------------------------
+if page=="Chat":
+    st.subheader("Ask Vinci AI anything")
+    for m in get_messages(st.session_state.cid):
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+    upload=st.file_uploader("Attach an image or document",type=["pdf","docx","txt","md","csv","png","jpg","jpeg","webp"],key="chat_file")
+    image_bytes=None; image_mime="image/jpeg"
+    if upload:
+        ext=Path(upload.name).suffix.lower()
+        if ext in [".png",".jpg",".jpeg",".webp"]:
+            image_bytes=upload.getvalue(); image_mime=upload.type or image_mime
+            st.image(image_bytes,width=180)
+        else:
+            try:
+                st.session_state.document_context=extract_document(upload)[:25000]
+                st.success("Document attached for this chat.")
+            except Exception as e: st.error(str(e))
+    prompt=st.chat_input("Ask Vinci AI anything...")
+    if prompt:
+        save_message(st.session_state.cid,"user",prompt)
+        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("assistant"):
+            with st.spinner("Vinci is thinking..."):
+                try:
+                    answer=ask_vinci(st.session_state.cid,prompt,image_bytes,image_mime,st.session_state.document_context)
+                    st.markdown(answer); save_message(st.session_state.cid,"assistant",answer)
+                    st.session_state.document_context=""
+                except Exception as e: st.error(f"Vinci error: {e}")
+
+# --------------------------- Voice ---------------------------
+elif page=="Voice":
+    st.subheader("Vinci Voice")
+    st.info("Push-to-talk voice input. This is not a continuous live voice connection.")
+    audio=st.audio_input("Record a message")
+    if audio and st.button("Transcribe and send"):
+        try:
+            client=gemini_client(GEMINI_KEY)
+            resp=client.models.generate_content(model=PRIMARY_MODEL,contents=[
+                "Transcribe this audio accurately. Return only the transcription.",
+                types.Part.from_bytes(data=audio.getvalue(),mime_type=audio.type or "audio/wav")])
+            transcript=resp.text or ""
+            st.write("**Transcription:**",transcript)
+            if transcript.strip():
+                save_message(st.session_state.cid,"user",transcript)
+                answer=ask_vinci(st.session_state.cid,transcript)
+                save_message(st.session_state.cid,"assistant",answer)
+                st.session_state.voice_answer=answer; st.markdown(answer)
+        except Exception as e: st.error(str(e))
+    if st.session_state.voice_answer and st.button("Read answer aloud"):
+        try: st.audio(make_speech(st.session_state.voice_answer),format="audio/mp3")
+        except Exception as e: st.error(str(e))
+
+# --------------------------- Image Studio ---------------------------
+elif page=="Image Studio":
+    st.subheader("Vinci Image Studio")
+    st.info("Uses a third-party image service. It is not a paid Gemini image-generation API; availability and free access are controlled by that provider.")
+    prompt=st.text_area("Describe the image",height=110)
+    fmt=st.selectbox("Format",["Square","Portrait","Landscape"])
+    dims={"Square":(1024,1024),"Portrait":(768,1024),"Landscape":(1024,768)}
+    if st.button("Generate image"):
+        if not prompt.strip(): st.warning("Enter a description.")
+        else:
+            try:
+                with st.spinner("Generating image..."):
+                    w,h=dims[fmt]; st.session_state.last_image=free_image(prompt,w,h)
+            except Exception as e: st.error(f"Image service unavailable: {e}")
+    if st.session_state.last_image:
+        st.image(st.session_state.last_image,use_container_width=True)
+        st.download_button("Download image",st.session_state.last_image,"vinci_image.png","image/png")
+
+# --------------------------- Design Studio ---------------------------
+elif page=="Design Studio":
+    st.subheader("Engineering Design Studio")
+    st.caption("Lightweight parametric 2D/3D geometry and photo-assisted estimates. This is not a manufacturing-ready CAD package.")
+    mode=st.radio("Design mode",["3D Model","2D Drawing","Photo-to-Design"],horizontal=True)
+    if mode=="3D Model":
+        with st.form("manual_3d"):
+            a,b,c=st.columns(3)
+            L=a.number_input("Length (mm)",1.,5000.,300.)
+            W=b.number_input("Width (mm)",1.,5000.,200.)
+            H=c.number_input("Height (mm)",1.,5000.,100.)
+            make=st.form_submit_button("Create 3D model")
+        if make:
+            st.session_state.design_result={"name":"Custom enclosure","components":[{"name":"Main body","dimensions":[L,W,H],"position":[0,0,0],"color":"#38a9d8"}]}
+    elif mode=="2D Drawing":
+        with st.form("manual_2d"):
+            L=st.number_input("Length (mm)",1.,5000.,300.)
+            W=st.number_input("Width (mm)",1.,5000.,200.)
+            make=st.form_submit_button("Create 2D drawing")
+        if make:
+            st.session_state.design_result={"name":"2D component","components":[{"name":"Main body","dimensions":[L,W,10.],"position":[0,0,0],"color":"#38a9d8"}]}
+    else:
+        photo=st.file_uploader("Upload an object photograph",type=["png","jpg","jpeg","webp"],key="photo_design")
+        if photo and st.button("Analyze photo"):
+            try:
+                client=gemini_client(GEMINI_KEY)
+                prompt=("Analyze only visible parts of this object. Return JSON with keys name, components. Each component: name, dimensions_mm [x,y,z] (estimates only), position_mm [x,y,z], color hex, description. Hidden parts must be labeled estimated. Never claim exact dimensions from a photo.")
+                resp=client.models.generate_content(model=PRIMARY_MODEL,contents=[prompt,types.Part.from_bytes(data=photo.getvalue(),mime_type=photo.type or "image/jpeg")],config=types.GenerateContentConfig(response_mime_type="application/json"))
+                data=json.loads(resp.text)
+                comps=[]
+                for x in data.get("components",[])[:12]:
+                    d=x.get("dimensions_mm",[50,50,50]); p=x.get("position_mm",[0,0,0])
+                    if len(d)==3 and len(p)==3:
+                        comps.append({"name":str(x.get("name","Part")),"dimensions":[max(1,float(v)) for v in d],"position":[float(v) for v in p],"color":x.get("color","#55aadd"),"description":x.get("description","Estimated from image")})
+                if not comps: raise ValueError("No components returned.")
+                st.session_state.design_result={"name":data.get("name","Analyzed object"),"components":comps}
+            except Exception as e: st.error(f"Photo analysis failed: {e}")
+    design=st.session_state.design_result
+    if design:
+        st.markdown(f"### {design['name']}")
+        explode=st.slider("Exploded-view separation",0.,150.,0.)
+        fig=go.Figure()
+        for i,p in enumerate(design["components"]):
+            x,y,z=p["position"]; dx,dy,dz=p["dimensions"]
+            fig.add_trace(go.Mesh3d(x=[x+i*explode,x+dx+i*explode,x+dx+i*explode,x+i*explode],y=[y,y,y+dy,y+dy],z=[z,z,z,z],i=[0,0],j=[1,2],k=[2,3],opacity=.6,color=p["color"],name=p["name"]))
+            fig.add_trace(go.Scatter3d(x=[x+i*explode+dx/2],y=[y+dy/2],z=[z+dz],mode="text",text=[p["name"]],showlegend=False))
+        fig.update_layout(height=480,scene=dict(aspectmode="data",xaxis_title="X mm",yaxis_title="Y mm",zaxis_title="Z mm"))
+        st.plotly_chart(fig,use_container_width=True)
+        for p in design["components"]: st.write(f"**{p['name']}** — {p['dimensions']} mm. {p.get('description','')}")
+        st.download_button("Download component data (JSON)",json.dumps(design,indent=2),"vinci_design.json","application/json")
+
+# --------------------------- DC Circuit Lab ---------------------------
+elif page=="DC Circuit Lab":
+    st.subheader("DC Circuit Design Lab")
+    st.info("Educational DC resistive-network solver using modified nodal analysis. This version does not require PySpice, Ngspice, Arduino hardware, or serial-port permissions.")
+    st.markdown("**Circuit setup**")
+    st.caption("Use node names such as 0, A, B. Node 0 is ground. Enter each resistor and voltage source in the tables.")
+    with st.form("dc_circuit_form"):
+        st.markdown("Resistors")
+        rcount=st.number_input("Number of resistors",1,8,2)
+        resistors=[]
+        for i in range(int(rcount)):
+            x,y,z=st.columns(3)
+            a=x.text_input(f"R{i+1} node +",value="A" if i==0 else "B",key=f"ra{i}")
+            b=y.text_input(f"R{i+1} node −",value="0",key=f"rb{i}")
+            r=z.number_input(f"R{i+1} (Ω)",.001,1e9,100.0 if i==0 else 220.0,key=f"rv{i}")
+            resistors.append((a.strip(),b.strip(),r))
+        st.markdown("Independent DC voltage sources")
+        scount=st.number_input("Number of voltage sources",1,4,1)
+        sources=[]
+        for i in range(int(scount)):
+            x,y,z=st.columns(3)
+            a=x.text_input(f"V{i+1} positive node",value="A",key=f"sa{i}")
+            b=y.text_input(f"V{i+1} negative node",value="0",key=f"sb{i}")
+            v=z.number_input(f"V{i+1} (V)",-1000.,1000.,12.0,key=f"sv{i}")
+            sources.append((a.strip(),b.strip(),v))
+        run=st.form_submit_button("Solve DC circuit")
+    if run:
+        try:
+            if any(not a or not b or a==b for a,b,_ in resistors+sources): raise ValueError("Every component needs two different node names.")
+            volts,currents=solve_dc(resistors,sources)
+            st.session_state.dc_result={"volts":volts,"currents":currents,"resistors":resistors,"sources":sources}
+        except Exception as e: st.error(str(e))
+    result=st.session_state.get("dc_result")
+    if result:
+        st.markdown("### Results")
+        st.write("**Node voltages (V)**",result["volts"])
+        st.dataframe(result["currents"],use_container_width=True)
+        st.caption("Resistor current is positive from the first entered node to the second. This is a software calculation, not a physical test.")
+        st.plotly_chart(draw_circuit(result["resistors"],result["sources"],result["volts"]),use_container_width=True)
+        st.download_button("Download results (JSON)",json.dumps(result,indent=2),"dc_circuit_results.json","application/json")
+    st.divider()
+    st.markdown("**Capacitors, inductors and AC analysis:** not included in this lightweight release. SciPy-based transient/AC analysis can be added as a separate tested module later. Drag-and-drop Schemdraw, PySpice/Ngspice simulation and physical Arduino uploads are intentionally omitted rather than presented as working features.")
+
+# --------------------------- Research ---------------------------
+elif page=="Research":
+    st.subheader("Research")
+    query=st.text_input("Research question")
+    limit=st.slider("Number of sources",3,10,6)
+    if st.button("Search sources"):
+        try: st.session_state.research_results=research(query,limit) if query.strip() else []
+        except Exception as e: st.error(str(e))
+    results=st.session_state.research_results
+    for i,item in enumerate(results,1):
+        with st.container(border=True):
+            st.markdown(f"**[S{i}] {item['title']}**")
+            st.write(item["body"])
+            if item["url"]: st.markdown(f"[Open source]({item['url']})")
+    if results and st.button("Analyze research with Vinci"):
+        source_text="\n\n".join(f"[S{i}] {x['title']}\n{x['url']}\n{x['body']}" for i,x in enumerate(results,1))
+        try:
+            answer=gemini_request("Analyze these sources, compare evidence, state limitations and cite S numbers:\n"+source_text).text or ""
+            st.markdown(answer)
+        except Exception as e: st.error(str(e))
+
+# --------------------------- Projects ---------------------------
+elif page=="Projects":
+    st.subheader("Project workspace")
+    with st.form("project_add"):
+        name=st.text_input("Project name"); desc=st.text_area("Description")
+        add=st.form_submit_button("Save project")
+    if add and name.strip():
+        with db() as c: c.execute("INSERT INTO projects(user_id,name,description,created_at) VALUES(?,?,?,?)",(UID,name,desc,stamp()))
+        st.success("Project saved."); st.rerun()
+    with db() as c: projects=c.execute("SELECT * FROM projects WHERE user_id=? ORDER BY id DESC",(UID,)).fetchall()
+    for p in projects:
+        with st.container(border=True):
+            st.markdown(f"**{p['name']}**"); st.write(p["description"])
+            statuses=["Planning","In progress","On hold","Completed"]
+            current=st.selectbox("Status",statuses,index=statuses.index(p["status"]),key=f"status{p['id']}")
+            if current!=p["status"]:
+                with db() as c: c.execute("UPDATE projects SET status=? WHERE id=? AND user_id=?",(current,p["id"],UID))
+                st.rerun()
+            if st.button("Delete project",key=f"pd{p['id']}"):
+                with db() as c: c.execute("DELETE FROM projects WHERE id=? AND user_id=?",(p["id"],UID))
+                st.rerun()
+    st.divider(); st.markdown("### Reminders")
+    with st.form("reminder_add"):
+        title=st.text_input("Reminder"); due=st.date_input("Due date"); notes=st.text_area("Notes")
+        addrem=st.form_submit_button("Add reminder")
+    if addrem and title.strip():
+        with db() as c: c.execute("INSERT INTO reminders(user_id,title,due,notes) VALUES(?,?,?,?)",(UID,title,due.isoformat(),notes))
+        st.rerun()
+    with db() as c: reminders=c.execute("SELECT * FROM reminders WHERE user_id=? ORDER BY due",(UID,)).fetchall()
+    for r in reminders:
+        done=st.checkbox(f"{r['title']} — {r['due']}",value=bool(r["completed"]),key=f"rem{r['id']}")
+        if done!=bool(r["completed"]):
+            with db() as c: c.execute("UPDATE reminders SET completed=? WHERE id=? AND user_id=?",(int(done),r["id"],UID))
+            st.rerun()
+
+# --------------------------- Documents ---------------------------
+elif page=="Documents":
+    st.subheader("Private document library")
+    up=st.file_uploader("Upload PDF, Word or text document",type=["pdf","docx","txt","md","csv"])
+    if up and st.button("Extract and save document"):
+        try:
+            content=extract_document(up)
+            if not content.strip(): st.warning("No selectable text found. Scanned documents need OCR.")
+            else:
+                with db() as c: c.execute("INSERT INTO documents(user_id,filename,content,created_at) VALUES(?,?,?,?)",(UID,up.name,content,stamp()))
+                st.success("Document saved privately.")
+        except Exception as e: st.error(str(e))
+    with db() as c: docs=c.execute("SELECT * FROM documents WHERE user_id=? ORDER BY id DESC",(UID,)).fetchall()
+    for d in docs:
+        with st.expander(d["filename"]):
+            st.text_area("Extracted text",d["content"][:15000],height=180,key=f"doc{d['id']}")
+            if st.button("Load into Chat",key=f"load{d['id']}"):
+                st.session_state.document_context=d["content"][:25000]; st.session_state.page="Chat"; st.rerun()
+            if st.button("Delete",key=f"dd{d['id']}"):
+                with db() as c: c.execute("DELETE FROM documents WHERE id=? AND user_id=?",(d["id"],UID))
+                st.rerun()
+
+# --------------------------- Settings ---------------------------
+elif page=="Settings":
+    st.subheader("Account and platform settings")
+    st.write("**Name:**",USER["full_name"])
+    st.write("**Email:**",USER["email"])
+    st.write("**AI primary:**",PRIMARY_MODEL)
+    st.write("**Fallback:**",FALLBACK_MODEL)
+    st.write("**Database:**",str(DB_PATH))
+    st.caption("API keys and SMTP credentials must be configured in deployment Secrets, never committed to source control.")
+    st.caption("This release uses a server-side Streamlit session for local email/password authentication. For persistent cross-browser/device login, configure a trusted OIDC provider or a production identity service.")
+
+# --------------------------- Admin ---------------------------
+elif page=="Admin":
+    if not IS_ADMIN:
+        st.error("Administrator access required."); st.stop()
+    st.subheader("JTEG Administrator Dashboard")
+    st.warning("Privacy boundary: this dashboard displays account and usage metadata only. It does not query or display private messages, documents, prompts, or project content.")
+    with db() as c:
+        users=c.execute("""SELECT id,full_name,email,phone,job,verified,created_at,last_login,login_count,role
+                           FROM users ORDER BY created_at DESC""").fetchall()
+        counts=c.execute("SELECT event,COUNT(*) n FROM usage_events GROUP BY event").fetchall()
+    st.metric("Registered accounts",len(users))
+    st.dataframe([dict(x) for x in users],use_container_width=True)
+    st.markdown("### Platform usage totals")
+    st.dataframe([dict(x) for x in counts],use_container_width=True)
+
+# --------------------------- Footer ---------------------------
+st.divider()
+st.markdown('<div style="text-align:center;color:#91afc4;padding:14px"><b>VINCI AI</b><br>JTEG INTELLIGENCE PLATFORM<br>Made in Nigeria. Built for the World.</div>',unsafe_allow_html=True)
