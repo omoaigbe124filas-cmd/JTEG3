@@ -1,0 +1,95 @@
+
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="650" viewBox="0 0 900 650">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071322"/>
+      <stop offset="100%" stop-color="#101e32"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9afaff"/>
+      <stop offset="100%" stop-color="#00bcd4"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fff0b0"/>
+      <stop offset="100%" stop-color="#d6a94c"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="900" height="650" rx="28" fill="url(#bg)"/>
+
+  <!-- Circuit background -->
+  <g fill="none" stroke="#087d9a" stroke-width="2" opacity=".35">
+    <path d="M0 180 H190 V230 H300"/>
+    <path d="M900 160 H730 V210 H620"/>
+    <path d="M0 290 H120 V340 H260"/>
+    <path d="M900 300 H790 V350 H650"/>
+    <path d="M80 90 H220 V130 H310"/>
+    <path d="M820 90 H690 V130 H590"/>
+    <path d="M150 400 H240 V440 H330"/>
+    <path d="M750 400 H660 V440 H570"/>
+  </g>
+
+  <g fill="#00d9f5" opacity=".8">
+    <circle cx="190" cy="180" r="5"/>
+    <circle cx="730" cy="160" r="5"/>
+    <circle cx="120" cy="290" r="5"/>
+    <circle cx="790" cy="300" r="5"/>
+    <circle cx="220" cy="90" r="5"/>
+    <circle cx="690" cy="90" r="5"/>
+  </g>
+
+  <!-- Engineering J symbol -->
+  <g fill="none" stroke="url(#cyan)" stroke-linecap="round" filter="url(#glow)">
+    <path d="M440 175 V330 Q440 425 350 425 Q275 425 225 365"
+          stroke-width="17"/>
+    <path d="M465 175 V330 Q465 450 350 450 Q260 450 205 385"
+          stroke-width="8"/>
+    <path d="M490 175 V330 Q490 475 350 475 Q245 475 185 405"
+          stroke-width="5"/>
+  </g>
+
+  <!-- Transmission tower -->
+  <g fill="none" stroke="url(#gold)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M570 125 L510 425 H630 Z" stroke-width="8"/>
+    <path d="M570 125 L630 425 M570 125 L510 425" stroke-width="3"/>
+    <path d="M548 230 H592 M535 290 H605 M523 350 H617" stroke-width="6"/>
+    <path d="M540 230 L600 290 L530 350 L610 410" stroke-width="3"/>
+    <path d="M600 230 L540 290 L610 350 L530 410" stroke-width="3"/>
+    <path d="M470 185 H670 M490 210 H650" stroke-width="5"/>
+    <path d="M470 185 L450 165 M670 185 L690 165" stroke-width="4"/>
+  </g>
+
+  <!-- Tower highlights -->
+  <g fill="#ffe9a6" filter="url(#glow)">
+    <circle cx="570" cy="125" r="5"/>
+    <circle cx="470" cy="185" r="4"/>
+    <circle cx="670" cy="185" r="4"/>
+  </g>
+
+  <!-- Brand name -->
+  <text x="450" y="535"
+        text-anchor="middle"
+        fill="#ffffff"
+        font-family="Arial, sans-serif"
+        font-size="76"
+        font-weight="700"
+        letter-spacing="12">JOSIAH</text>
+
+  <text x="450" y="582"
+        text-anchor="middle"
+        fill="#e9c879"
+        font-family="Arial, sans-serif"
+        font-size="23"
+        font-weight="600"
+        letter-spacing="5">TECHNOLOGIES ENGINEERING GROUP</text>
+
+  <path d="M180 610 H720" stroke="#00cde8" stroke-width="2" opacity=".7"/>
+</svg>
+  
