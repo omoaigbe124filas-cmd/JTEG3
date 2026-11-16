@@ -2586,3 +2586,341 @@ elif page == "Projects":
                     ))
 
                 st.rerun()
+# ==========================================================
+# SCHEDULED REMINDERS
+# ==========================================================
+
+elif page == "Scheduled Reminders":
+
+    st.subheader("Scheduled Reminders")
+
+    with st.form("reminder_form"):
+
+        title = st.text_input("Reminder title")
+
+        due = st.date_input("Due date")
+
+        notes = st.text_area("Notes")
+
+        submit = st.form_submit_button(
+            "Save reminder"
+        )
+
+    if submit:
+
+        if not title.strip():
+
+            st.warning(
+                "Enter a reminder title."
+            )
+
+        else:
+
+            with database() as con:
+
+                con.execute("""
+                    INSERT INTO reminders
+                    (user_id,title,due,notes,created_at)
+                    VALUES(?,?,?,?,?)
+                """, (
+                    UID,
+                    title.strip(),
+                    due.isoformat(),
+                    notes,
+                    timestamp()
+                ))
+
+            st.success("Reminder saved.")
+
+            st.rerun()
+
+    with database() as con:
+
+        reminders = con.execute("""
+            SELECT * FROM reminders
+            WHERE user_id=?
+            ORDER BY due ASC
+        """, (UID,)).fetchall()
+
+    if not reminders:
+
+        st.info(
+            "No reminders have been created."
+        )
+
+    for reminder in reminders:
+
+        with st.container(border=True):
+
+            completed = st.checkbox(
+                reminder["title"],
+                value=bool(reminder["completed"]),
+                key=f"reminder_{reminder['id']}"
+            )
+
+            st.caption(
+                "Due: " + str(reminder["due"])
+            )
+
+            if reminder["notes"]:
+
+                st.write(reminder["notes"])
+
+            if completed != bool(reminder["completed"]):
+
+                with database() as con:
+
+                    con.execute("""
+                        UPDATE reminders
+                        SET completed=?
+                        WHERE id=? AND user_id=?
+                    """, (
+                        int(completed),
+                        reminder["id"],
+                        UID
+                    ))
+
+                st.rerun()
+
+            if st.button(
+                "Delete reminder",
+                key=f"reminder_delete_{reminder['id']}"
+            ):
+
+                with database() as con:
+
+                    con.execute("""
+                        DELETE FROM reminders
+                        WHERE id=? AND user_id=?
+                    """, (
+                        reminder["id"],
+                        UID
+                    ))
+
+                st.rerun()
+
+
+# ==========================================================
+# PLUGINS
+# ==========================================================
+
+elif page == "Plugins":
+
+    st.subheader("Plugins")
+
+    st.write(
+        "Connected integrations and authorised services "
+        "will be made available here."
+    )
+
+    st.info(
+        "No external integrations are currently activated "
+        "through this workspace."
+    )
+
+
+# ==========================================================
+# CONVERSATION HISTORY
+# ==========================================================
+
+elif page == "Conversation History":
+
+    st.subheader("Conversation History")
+
+    st.write(
+        "Your saved conversations are associated "
+        "with your account."
+    )
+
+    conversations = list_conversations()
+
+    if not conversations:
+
+        st.info(
+            "You do not have any saved conversations yet."
+        )
+
+    for conversation in conversations:
+
+        with st.container(border=True):
+
+            st.markdown(
+                f"**{conversation['title']}**"
+            )
+
+            st.caption(
+                "Last updated: "
+                + str(conversation["updated_at"])
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                if st.button(
+                    "Open conversation",
+                    key=f"history_open_{conversation['id']}"
+                ):
+
+                    st.session_state.conversation_id = (
+                        conversation["id"]
+                    )
+
+                    st.session_state.page = "Chat"
+
+                    st.rerun()
+
+            with col2:
+
+                if st.button(
+                    "Delete conversation",
+                    key=f"history_delete_{conversation['id']}"
+                ):
+
+                    with database() as con:
+
+                        con.execute("""
+                            DELETE FROM conversations
+                            WHERE id=? AND user_id=?
+                        """, (
+                            conversation["id"],
+                            UID
+                        ))
+
+                    if (
+                        st.session_state.conversation_id
+                        == conversation["id"]
+                    ):
+
+                        st.session_state.conversation_id = None
+
+                    st.rerun()
+
+
+# ==========================================================
+# SETTINGS
+# ==========================================================
+
+elif page == "Settings":
+
+    st.subheader("Account Settings")
+
+    st.write(
+        "**Name:**",
+        USER["full_name"]
+    )
+
+    st.write(
+        "**Email:**",
+        USER["email"]
+    )
+
+    st.caption(
+        "Your workspace and account data are separated "
+        "from other users."
+    )
+
+    st.caption(
+        "Your browser login session has a maximum "
+        "configured lifetime of 30 days."
+    )
+
+    st.caption(
+        "Logging out revokes the current server-side session."
+    )
+
+    st.caption(
+        "Keep your password and account credentials private."
+    )
+
+
+# ==========================================================
+# ADMINISTRATOR DATABASE MANAGEMENT
+# ==========================================================
+
+elif page == "Database Management":
+
+    if not IS_ADMIN:
+
+        st.error(
+            "Administrator access required."
+        )
+
+        st.stop()
+
+    st.subheader(
+        "JTEG Administrator Dashboard"
+    )
+
+    st.warning(
+        "This dashboard displays account and usage metadata. "
+        "It does not display private conversations, prompts, "
+        "documents or project contents."
+    )
+
+    with database() as con:
+
+        users = con.execute("""
+            SELECT
+                id,
+                full_name,
+                email,
+                phone,
+                job,
+                verified,
+                role,
+                created_at,
+                last_login,
+                login_count
+            FROM users
+            ORDER BY created_at DESC
+        """).fetchall()
+
+        usage = con.execute("""
+            SELECT
+                event,
+                COUNT(*) AS total
+            FROM usage_events
+            GROUP BY event
+            ORDER BY total DESC
+        """).fetchall()
+
+    st.metric(
+        "Registered accounts",
+        len(users)
+    )
+
+    st.subheader("Account metadata")
+
+    st.dataframe(
+        [dict(user) for user in users],
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader("Platform usage")
+
+    st.dataframe(
+        [dict(event) for event in usage],
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# ==========================================================
+# FOOTER
+# ==========================================================
+
+st.divider()
+
+st.markdown("""
+<div style="
+    text-align:center;
+    color:#91afc4;
+    padding:18px;
+">
+    <b>VINCI AI</b><br>
+    JTEG INTELLIGENCE PLATFORM<br>
+    <small>Made in Nigeria. Built for the World.</small>
+</div>
+""", unsafe_allow_html=True)
