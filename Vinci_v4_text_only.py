@@ -3,7 +3,7 @@
 
 import google.generativeai as genai
 
-MY_KEY = "AQ.Ab8RN6LPO6n2Ul0RWLFvjPu4hAu3b6ZPBA_bBxY2eQCXrftanQ"
+MY_KEY = ""
 genai.configure(api_key=MY_KEY)
 
 try:
