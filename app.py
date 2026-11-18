@@ -4728,7 +4728,8 @@ def vinci_chat_page():
 
             with st.spinner("VINCI is thinking..."):
 
-                try# ============================================================
+                try
+# ============================================================
 # VINCI AI — JTEG INTELLIGENCE PLATFORM
 # BLOCK 6 OF 6
 # APPLICATION INTERFACE, DASHBOARD AND WORKSPACES
