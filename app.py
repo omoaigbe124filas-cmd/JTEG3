@@ -6,16 +6,17 @@
 # ============================================================
 
 import os
-import io
 import re
+import io
 import json
-import time
 import uuid
+import time
 import base64
 import hashlib
 import secrets
 import logging
 import mimetypes
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 
@@ -24,243 +25,223 @@ import httpx
 import bcrypt
 
 from sqlalchemy import (
-    create_engine,
-    text,
-    inspect,
+    create_engine, text, inspect,
+    Integer, String, Boolean
 )
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import QueuePool
 
 
-# ------------------------------------------------------------
-# APPLICATION CONFIGURATION
-# ------------------------------------------------------------
+# ============================================================
+# 1. APPLICATION CONFIGURATION
+# ============================================================
 
-APP_NAME = "Vinci AI"
-APP_VERSION = "3.0"
+APP_NAME = "VINCI AI"
+APP_VERSION = "4.0"
+APP_BRAND = "JTEG INTELLIGENCE PLATFORM"
 
-APP_DESCRIPTION = (
-    "The JTEG Intelligence Platform"
-)
+PRIMARY_MODEL = "gemini-3.5-flash"
+FALLBACK_MODEL = "gemini-3.8-flash"
 
-DEFAULT_CHAT_PRIMARY = "gemini-3.8-flash"
-DEFAULT_CHAT_FALLBACK = "gemini-3.5-flash"
-
-DEFAULT_RESEARCH_PRIMARY = "gemini-3.5-flash"
-DEFAULT_RESEARCH_FALLBACK = "gemini-3.6-flash"
+RESEARCH_PRIMARY_MODEL = "gemini-3.5-flash"
+RESEARCH_FALLBACK_MODEL = "gemini-3.6-flash"
 
 MAX_UPLOAD_MB = 15
 MAX_DOCUMENT_CHARS = 50000
 
 SESSION_DAYS = 30
 VERIFICATION_MINUTES = 10
+MAX_VERIFICATION_ATTEMPTS = 5
 
 AI_POLICY = {
     "free_only": True,
-    "allow_paid_models": False,
-    "allow_automatic_purchases": False,
-}
-
-CHAT_MODELS = {
-    "primary": DEFAULT_CHAT_PRIMARY,
-    "fallback": DEFAULT_CHAT_FALLBACK,
-}
-
-RESEARCH_MODELS = {
-    "primary": DEFAULT_RESEARCH_PRIMARY,
-    "fallback": DEFAULT_RESEARCH_FALLBACK,
+    "paid_models": False,
+    "automatic_purchases": False,
+    "paid_fallback": False
 }
 
 OPENROUTER_POLICY = {
     "enabled": True,
     "research_only": True,
-    "image_only_for_approved_free_models": True,
-    "allow_paid_models": False,
+    "image_only_approved_free_models": True,
+    "paid_models": False
 }
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("vinci")
 
-# ------------------------------------------------------------
-# ENVIRONMENT AND SECRET MANAGEMENT
-# ------------------------------------------------------------
 
-def get_secret(name, default=""):
-    """Read configuration from Streamlit secrets or environment."""
+# ============================================================
+# 2. SECRET MANAGEMENT
+# ============================================================
+
+def get_secret(name, default=None):
 
     try:
-        value = st.secrets.get(name, None)
-        if value is not None:
-            return str(value)
+        value = st.secrets.get(name)
+
+        if value:
+            return value
+
     except Exception:
         pass
 
-    return os.getenv(name, default)
+    return os.environ.get(name, default)
 
 
 DATABASE_URL = get_secret("DATABASE_URL")
 
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
-
 OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY")
 
-OPENROUTER_BASE_URL = (
-    "https://openrouter.ai/api/v1"
-)
-
 OPENROUTER_RESEARCH_MODEL = get_secret(
-    "OPENROUTER_RESEARCH_MODEL",
-    ""
+    "OPENROUTER_RESEARCH_MODEL"
 )
 
 OPENROUTER_IMAGE_MODEL = get_secret(
-    "OPENROUTER_IMAGE_MODEL",
-    ""
+    "OPENROUTER_IMAGE_MODEL"
 )
 
-ADMIN_EMAILS = {
-    email.strip().lower()
-    for email in get_secret(
-        "ADMIN_EMAILS", ""
-    ).split(",")
-    if email.strip()
-}
-
 SMTP_HOST = get_secret("SMTP_HOST")
-SMTP_PORT = int(get_secret("SMTP_PORT", "587"))
+SMTP_PORT = int(get_secret("SMTP_PORT", 587))
 SMTP_USERNAME = get_secret("SMTP_USERNAME")
 SMTP_PASSWORD = get_secret("SMTP_PASSWORD")
 SMTP_FROM_EMAIL = get_secret("SMTP_FROM_EMAIL")
 
 COOKIE_SECRET = get_secret("COOKIE_SECRET")
 
-
-# ------------------------------------------------------------
-# LOGGING
-# ------------------------------------------------------------
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | %(levelname)s | "
-        "%(name)s | %(message)s"
-    ),
-)
-
-logger = logging.getLogger("vinci_ai")
+ADMIN_EMAILS = [
+    item.strip().lower()
+    for item in get_secret("ADMIN_EMAILS", "").split(",")
+    if item.strip()
+]
 
 
-# ------------------------------------------------------------
-# STREAMLIT CONFIGURATION
-# ------------------------------------------------------------
+# ============================================================
+# 3. STREAMLIT CONFIGURATION
+# ============================================================
 
 st.set_page_config(
-    page_title="Vinci AI | JTEG",
-    page_icon="✨",
+    page_title=APP_NAME,
+    page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded"
 )
 
 
-# ------------------------------------------------------------
-# DATABASE CONNECTION
-# ------------------------------------------------------------
+# ============================================================
+# 4. GENERAL UTILITIES
+# ============================================================
 
-@st.cache_resource
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def timestamp():
+    return utc_now().isoformat()
+
+
+def new_id():
+    return str(uuid.uuid4())
+
+
+def normalize_email(email):
+    return str(email or "").strip().lower()
+
+
+def hash_value(value):
+    return hashlib.sha256(
+        str(value).encode("utf-8")
+    ).hexdigest()
+
+
+def safe_text(value, maximum=50000):
+    return str(value or "").strip()[:maximum]
+
+
+def generate_token():
+    return secrets.token_urlsafe(48)
+
+
+def database_ready():
+    return bool(DATABASE_URL)
+
+
+# ============================================================
+# 5. POSTGRESQL ENGINE
+# ============================================================
+
+@st.cache_resource(show_spinner=False)
 def get_database_engine():
-    """
-    Create the PostgreSQL connection pool.
-
-    DATABASE_URL must point to a PostgreSQL database.
-    SQLite is deliberately not used in this new version.
-    """
 
     if not DATABASE_URL:
-        return None
-
-    if not DATABASE_URL.startswith(
-        ("postgresql://", "postgresql+psycopg://")
-    ):
-        raise ValueError(
-            "Vinci AI requires a PostgreSQL DATABASE_URL."
+        raise RuntimeError(
+            "DATABASE_URL is missing from Streamlit secrets."
         )
 
-    database_url = DATABASE_URL
+    url = DATABASE_URL.strip()
 
-    if database_url.startswith("postgresql://"):
-        database_url = database_url.replace(
+    if url.startswith("postgres://"):
+        url = url.replace(
+            "postgres://",
+            "postgresql+psycopg://",
+            1
+        )
+
+    elif url.startswith("postgresql://"):
+        url = url.replace(
             "postgresql://",
             "postgresql+psycopg://",
-            1,
+            1
         )
 
     return create_engine(
-        database_url,
+        url,
         poolclass=QueuePool,
         pool_size=5,
         max_overflow=5,
         pool_pre_ping=True,
         pool_recycle=1800,
-        connect_args={
-            "connect_timeout": 15,
-        },
+        connect_args={"connect_timeout": 15}
     )
 
 
-def database_ready():
-    try:
-        engine = get_database_engine()
-
-        if engine is None:
-            return False
-
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-
-        return True
-
-    except Exception as error:
-        logger.error(
-            "Database connection failed: %s",
-            error,
-        )
-        return False
-
-
-def execute_sql(query, parameters=None, fetch=False):
-    """Execute parameterised SQL safely."""
+def execute_sql(query, params=None, fetch=False):
 
     engine = get_database_engine()
 
-    if engine is None:
-        raise RuntimeError(
-            "PostgreSQL DATABASE_URL is not configured."
-        )
-
     with engine.begin() as connection:
+
         result = connection.execute(
             text(query),
-            parameters or {},
+            params or {}
         )
 
         if fetch:
-            return [
-                dict(row)
-                for row in result.mappings().all()
-            ]
+            return [dict(row) for row in result.mappings()]
 
         return result.rowcount
 
 
-# ------------------------------------------------------------
-# DATABASE INITIALISATION
-# ------------------------------------------------------------
+def test_database_connection():
+
+    try:
+
+        execute_sql("SELECT 1")
+
+        return True
+
+    except Exception as error:
+
+        logger.exception("Database connection failed.")
+        raise error
+
+
+# ============================================================
+# 6. DATABASE INITIALIZATION
+# ============================================================
 
 def initialize_database():
-    """
-    Create a completely new Vinci AI database schema.
-
-    Existing SQLite data is not imported.
-    No user chat contents are exposed to administrators.
-    """
 
     statements = [
 
@@ -269,52 +250,52 @@ def initialize_database():
             id VARCHAR(36) PRIMARY KEY,
             full_name VARCHAR(200) NOT NULL,
             email VARCHAR(320) UNIQUE NOT NULL,
-            phone VARCHAR(40) NOT NULL,
-            job_description TEXT NOT NULL,
+            phone VARCHAR(40),
+            job_description TEXT,
             password_hash TEXT NOT NULL,
-            role VARCHAR(20) NOT NULL DEFAULT 'user',
-            is_verified BOOLEAN NOT NULL DEFAULT FALSE,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_verified BOOLEAN DEFAULT FALSE,
+            is_active BOOLEAN DEFAULT TRUE,
+            role VARCHAR(30) DEFAULT 'user',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
             last_login TIMESTAMPTZ,
-            login_count INTEGER NOT NULL DEFAULT 0
+            login_count INTEGER DEFAULT 0
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS verification_codes (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
             code_hash TEXT NOT NULL,
             expires_at TIMESTAMPTZ NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            attempts INTEGER DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS sessions (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            token_hash TEXT NOT NULL UNIQUE,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            token_hash TEXT UNIQUE NOT NULL,
             expires_at TIMESTAMPTZ NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            revoked BOOLEAN NOT NULL DEFAULT FALSE
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            revoked BOOLEAN DEFAULT FALSE
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS conversations (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            title VARCHAR(300) NOT NULL DEFAULT 'New conversation',
-            workspace VARCHAR(40) NOT NULL DEFAULT 'chat',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            archived BOOLEAN NOT NULL DEFAULT FALSE
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            title VARCHAR(300) DEFAULT 'New conversation',
+            is_archived BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
@@ -323,62 +304,61 @@ def initialize_database():
             id VARCHAR(36) PRIMARY KEY,
             conversation_id VARCHAR(36) NOT NULL
                 REFERENCES conversations(id) ON DELETE CASCADE,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            role VARCHAR(20) NOT NULL,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            role VARCHAR(30) NOT NULL,
             content TEXT NOT NULL,
-            model VARCHAR(150),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS saved_items (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            item_type VARCHAR(40) NOT NULL,
-            title VARCHAR(300) NOT NULL,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            title VARCHAR(300),
             content TEXT,
-            source_id VARCHAR(36),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            item_type VARCHAR(50) DEFAULT 'general',
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS library_files (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            filename VARCHAR(300) NOT NULL,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            filename VARCHAR(500) NOT NULL,
             storage_path TEXT NOT NULL,
             file_type VARCHAR(100),
-            file_size BIGINT NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            file_size BIGINT DEFAULT 0,
+            extracted_text TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS reminders (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
             title VARCHAR(300) NOT NULL,
             description TEXT,
-            scheduled_at TIMESTAMPTZ NOT NULL,
-            completed BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            reminder_time TIMESTAMPTZ NOT NULL,
+            is_completed BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
         """
         CREATE TABLE IF NOT EXISTS workspace_sessions (
             id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            workspace VARCHAR(40) NOT NULL,
-            state_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            workspace VARCHAR(100) NOT NULL,
+            session_data JSONB DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(user_id, workspace)
         )
         """,
@@ -387,13 +367,11 @@ def initialize_database():
         CREATE TABLE IF NOT EXISTS provider_usage (
             id VARCHAR(36) PRIMARY KEY,
             user_id VARCHAR(36),
-            provider VARCHAR(80) NOT NULL,
-            model VARCHAR(150) NOT NULL,
-            workspace VARCHAR(40) NOT NULL,
-            status VARCHAR(40) NOT NULL,
-            input_tokens INTEGER DEFAULT 0,
-            output_tokens INTEGER DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            provider VARCHAR(100),
+            model VARCHAR(200),
+            workspace VARCHAR(100),
+            success BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
@@ -401,198 +379,248 @@ def initialize_database():
         CREATE TABLE IF NOT EXISTS admin_activity_logs (
             id VARCHAR(36) PRIMARY KEY,
             user_id VARCHAR(36),
-            email VARCHAR(320),
-            activity VARCHAR(100) NOT NULL,
-            ip_address VARCHAR(100),
-            user_agent TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            action VARCHAR(200),
+            details TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """,
 
+        """
+        CREATE TABLE IF NOT EXISTS generated_images (
+            id VARCHAR(36) PRIMARY KEY,
+            user_id VARCHAR(36) NOT NULL REFERENCES users(id)
+                ON DELETE CASCADE,
+            prompt TEXT,
+            storage_path TEXT NOT NULL,
+            model VARCHAR(200),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    ]
+
+    indexes = [
+
+        "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at)",
+
+        "CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)",
+
+        "CREATE INDEX IF NOT EXISTS idx_saved_user ON saved_items(user_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_library_user ON library_files(user_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id)",
+
+        "CREATE INDEX IF NOT EXISTS idx_provider_created ON provider_usage(created_at)",
+
+        "CREATE INDEX IF NOT EXISTS idx_images_user ON generated_images(user_id)"
     ]
 
     engine = get_database_engine()
 
-    if engine is None:
-        raise RuntimeError(
-            "Configure DATABASE_URL before database setup."
-        )
-
     with engine.begin() as connection:
+
         for statement in statements:
             connection.execute(text(statement))
 
-    logger.info("Vinci AI PostgreSQL schema initialised.")
+        for statement in indexes:
+            connection.execute(text(statement))
+
+    return True
 
 
-# ------------------------------------------------------------
-# PASSWORD UTILITIES
-# ------------------------------------------------------------
-
-def hash_password(password):
-    return bcrypt.hashpw(
-        password.encode("utf-8"),
-        bcrypt.gensalt(rounds=12),
-    ).decode("utf-8")
-
-
-def verify_password(password, password_hash):
-    try:
-        return bcrypt.checkpw(
-            password.encode("utf-8"),
-            password_hash.encode("utf-8"),
-        )
-    except Exception:
-        return False
-
-
-def hash_token(token):
-    return hashlib.sha256(
-        token.encode("utf-8")
-    ).hexdigest()
-
-
-def new_id():
-    return str(uuid.uuid4())
-
-
-# ------------------------------------------------------------
-# BASIC VALIDATION
-# ------------------------------------------------------------
-
-def valid_email(email):
-    return bool(
-        re.fullmatch(
-            r"[^@\s]+@[^@\s]+\.[^@\s]+",
-            email.strip().lower(),
-        )
-    )
-
-
-def normalise_email(email):
-    return email.strip().lower()
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
-
-
-# ------------------------------------------------------------
-# APPLICATION STATE
-# ------------------------------------------------------------
+# ============================================================
+# 7. DEFAULT SESSION STATE
+# ============================================================
 
 DEFAULT_STATE = {
+
+    "auth_user": None,
     "authenticated": False,
-    "user": None,
-    "user_id": None,
-    "role": "user",
-    "active_workspace": "chat",
-    "active_conversation": None,
-    "workspace_sessions": {},
-    "pending_transcription": "",
-    "chat_input": "",
-    "show_navigation": False,
-    "show_login": True,
+
+    "pending_email": None,
+
+    "page": "Chat",
+
+    "conversation_id": None,
+
+    "document_context": "",
+
+    "chat_image": None,
+    "chat_image_mime": None,
+
+    "chat_uploaded_document_name": None,
+
+    "research_result": None,
+
+    "image_result": None,
+
+    "voice_result": None,
+
+    "workspace_sessions": {}
 }
 
 for key, value in DEFAULT_STATE.items():
+
     if key not in st.session_state:
         st.session_state[key] = value
 
 
 # ============================================================
+# 8. STARTUP DATABASE INITIALIZATION
+# ============================================================
+
+@st.cache_resource(show_spinner="Connecting to VINCI database...")
+def vinci_initialize():
+
+    test_database_connection()
+
+    initialize_database()
+
+    return True
+
+
+try:
+
+    vinci_initialize()
+
+except Exception as error:
+
+    st.error("VINCI AI database initialization failed.")
+
+    st.code(str(error))
+
+    st.info(
+        "Check DATABASE_URL and confirm that PostgreSQL "
+        "is accessible."
+    )
+
+    st.stop()
+
+
+# ============================================================
 # END OF BLOCK 1
-# CONTINUE DIRECTLY WITH BLOCK 2
 # ============================================================
 
 # ============================================================
-# VINCI AI — BLOCK 2 OF 6
-# AUTHENTICATION, REGISTRATION AND ADMIN SECURITY
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 2 OF 6
+# AUTHENTICATION, REGISTRATION AND SECURITY
 # ============================================================
 
 import smtplib
 from email.message import EmailMessage
 
 
-# ------------------------------------------------------------
-# EMAIL DELIVERY
-# ------------------------------------------------------------
+# ============================================================
+# 1. PASSWORD SECURITY
+# ============================================================
 
-def send_email(recipient, subject, body):
+def hash_password(password):
+
+    password_bytes = password.encode("utf-8")
+
+    return bcrypt.hashpw(
+        password_bytes,
+        bcrypt.gensalt(rounds=12)
+    ).decode("utf-8")
+
+
+def verify_password(password, stored_hash):
+
+    try:
+
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            stored_hash.encode("utf-8")
+        )
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# 2. EMAIL DELIVERY
+# ============================================================
+
+def send_email(to_email, subject, body):
 
     if not all([
         SMTP_HOST,
         SMTP_USERNAME,
         SMTP_PASSWORD,
-        SMTP_FROM_EMAIL,
+        SMTP_FROM_EMAIL
     ]):
-        logger.warning(
-            "Email configuration is incomplete."
+
+        raise RuntimeError(
+            "SMTP configuration is incomplete."
         )
-        return False
 
     message = EmailMessage()
+
     message["Subject"] = subject
     message["From"] = SMTP_FROM_EMAIL
-    message["To"] = recipient
+    message["To"] = to_email
+
     message.set_content(body)
 
-    try:
-        with smtplib.SMTP(
-            SMTP_HOST,
-            SMTP_PORT,
-            timeout=20,
-        ) as server:
+    with smtplib.SMTP(
+        SMTP_HOST,
+        SMTP_PORT,
+        timeout=20
+    ) as server:
 
-            server.starttls()
+        server.starttls()
 
-            server.login(
-                SMTP_USERNAME,
-                SMTP_PASSWORD,
-            )
-
-            server.send_message(message)
-
-        return True
-
-    except Exception as error:
-        logger.error(
-            "Email delivery failed: %s",
-            error,
+        server.login(
+            SMTP_USERNAME,
+            SMTP_PASSWORD
         )
-        return False
+
+        server.send_message(message)
+
+    return True
 
 
 def send_verification_email(email, code):
 
-    subject = "Verify your Vinci AI account"
-
     body = f"""
-Welcome to Vinci AI.
+Welcome to VINCI AI.
 
-Your account verification code is:
+Your email verification code is:
 
 {code}
 
 This code expires in {VERIFICATION_MINUTES} minutes.
 
-If you did not request this account, you can ignore this email.
+If you did not create this account, you can ignore this email.
 
+VINCI AI
 JTEG Intelligence Platform
 """
 
     return send_email(
         email,
-        subject,
-        body,
+        "VINCI AI — Email Verification",
+        body
     )
 
 
-# ------------------------------------------------------------
-# ACCOUNT LOOKUP
-# ------------------------------------------------------------
+# ============================================================
+# 3. USER LOOKUP
+# ============================================================
 
 def get_user_by_email(email):
+
+    email = normalize_email(email)
 
     rows = execute_sql(
         """
@@ -601,10 +629,8 @@ def get_user_by_email(email):
         WHERE email = :email
         LIMIT 1
         """,
-        {
-            "email": normalise_email(email),
-        },
-        fetch=True,
+        {"email": email},
+        fetch=True
     )
 
     return rows[0] if rows else None
@@ -619,42 +645,39 @@ def get_user_by_id(user_id):
         WHERE id = :user_id
         LIMIT 1
         """,
-        {
-            "user_id": user_id,
-        },
-        fetch=True,
+        {"user_id": str(user_id)},
+        fetch=True
     )
 
     return rows[0] if rows else None
 
 
-# ------------------------------------------------------------
-# ADMINISTRATOR ROLE MANAGEMENT
-# ------------------------------------------------------------
+# ============================================================
+# 4. ADMIN ROLE
+# ============================================================
 
-def is_admin_email(email):
+def sync_user_role(user_id):
 
-    return normalise_email(email) in ADMIN_EMAILS
+    user = get_user_by_id(user_id)
 
+    if not user:
+        return False
 
-def sync_user_role(user_id, email):
+    email = normalize_email(user["email"])
 
-    role = (
-        "admin"
-        if is_admin_email(email)
-        else "user"
-    )
+    role = "admin" if email in ADMIN_EMAILS else "user"
 
     execute_sql(
         """
         UPDATE users
-        SET role = :role
+        SET role = :role,
+            updated_at = NOW()
         WHERE id = :user_id
         """,
         {
             "role": role,
-            "user_id": user_id,
-        },
+            "user_id": str(user_id)
+        }
     )
 
     return role
@@ -662,92 +685,129 @@ def sync_user_role(user_id, email):
 
 def current_user_is_admin():
 
-    user = st.session_state.get("user")
+    user = st.session_state.get("auth_user")
 
-    if not user:
+    if not isinstance(user, dict):
         return False
 
-    return (
-        user.get("role") == "admin"
-        and is_admin_email(user.get("email", ""))
+    fresh_user = get_user_by_id(user.get("id"))
+
+    if not fresh_user:
+        return False
+
+    if not fresh_user.get("is_active"):
+        return False
+
+    role = sync_user_role(fresh_user["id"])
+
+    return role == "admin"
+
+
+# ============================================================
+# 5. VERIFICATION CODE CREATION
+# ============================================================
+
+def create_verification_code(user_id):
+
+    code = f"{secrets.randbelow(1000000):06d}"
+
+    execute_sql(
+        """
+        DELETE FROM verification_codes
+        WHERE user_id = :user_id
+        """,
+        {"user_id": str(user_id)}
     )
 
+    execute_sql(
+        """
+        INSERT INTO verification_codes (
+            id, user_id, code_hash, expires_at,
+            attempts, created_at
+        )
+        VALUES (
+            :id, :user_id, :code_hash, :expires_at,
+            0, NOW()
+        )
+        """,
+        {
+            "id": new_id(),
+            "user_id": str(user_id),
+            "code_hash": hash_value(code),
+            "expires_at": utc_now() + timedelta(
+                minutes=VERIFICATION_MINUTES
+            )
+        }
+    )
 
-# ------------------------------------------------------------
-# REGISTRATION
-# ------------------------------------------------------------
+    return code
+
+
+# ============================================================
+# 6. USER REGISTRATION
+# ============================================================
 
 def register_user(
     full_name,
     email,
     phone,
     job_description,
-    password,
+    password
 ):
-    full_name = full_name.strip()
-    email = normalise_email(email)
-    phone = phone.strip()
-    job_description = job_description.strip()
+
+    full_name = safe_text(full_name, 200)
+    email = normalize_email(email)
+    phone = safe_text(phone, 40)
+    job_description = safe_text(job_description, 1000)
 
     if not all([
         full_name,
         email,
         phone,
         job_description,
-        password,
+        password
     ]):
-        return False, "Please complete every field."
 
-    if not valid_email(email):
-        return False, "Enter a valid email address."
+        raise ValueError(
+            "All registration fields are required."
+        )
 
-    if len(full_name) < 2:
-        return False, "Enter your full name."
+    if not re.match(
+        r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+        email
+    ):
+
+        raise ValueError("Invalid email address.")
 
     if len(password) < 10:
-        return False, (
-            "Your password must contain at least "
-            "10 characters."
+
+        raise ValueError(
+            "Password must contain at least 10 characters."
         )
 
     if get_user_by_email(email):
-        return False, (
-            "An account already exists with this email."
+
+        raise ValueError(
+            "An account with this email already exists."
         )
 
     user_id = new_id()
-
-    role = (
-        "admin"
-        if is_admin_email(email)
-        else "user"
-    )
 
     password_hash = hash_password(password)
 
     execute_sql(
         """
         INSERT INTO users (
-            id,
-            full_name,
-            email,
-            phone,
-            job_description,
-            password_hash,
-            role,
-            is_verified,
-            is_active
+            id, full_name, email, phone,
+            job_description, password_hash,
+            is_verified, is_active, role,
+            created_at, updated_at
         )
         VALUES (
-            :id,
-            :full_name,
-            :email,
-            :phone,
-            :job_description,
-            :password_hash,
-            :role,
-            FALSE,
-            TRUE
+            :id, :full_name, :email, :phone,
+            :job_description, :password_hash,
+            FALSE, TRUE, 'user',
+            NOW(), NOW()
         )
         """,
         {
@@ -756,76 +816,50 @@ def register_user(
             "email": email,
             "phone": phone,
             "job_description": job_description,
-            "password_hash": password_hash,
-            "role": role,
-        },
+            "password_hash": password_hash
+        }
     )
 
-    code = f"{secrets.randbelow(1000000):06d}"
+    code = create_verification_code(user_id)
 
-    execute_sql(
-        """
-        INSERT INTO verification_codes (
-            id,
-            user_id,
-            code_hash,
-            expires_at,
-            attempts
-        )
-        VALUES (
-            :id,
-            :user_id,
-            :code_hash,
-            :expires_at,
-            0
-        )
-        """,
-        {
-            "id": new_id(),
-            "user_id": user_id,
-            "code_hash": hash_token(code),
-            "expires_at": (
-                utc_now()
-                + timedelta(minutes=VERIFICATION_MINUTES)
-            ),
-        },
-    )
+    try:
 
-    if not send_verification_email(email, code):
+        send_verification_email(email, code)
 
-        logger.warning(
-            "Verification email could not be delivered."
+    except Exception:
+
+        logger.exception(
+            "Verification email delivery failed."
         )
 
-        return True, (
-            "Your account was created, but verification "
-            "email delivery failed. Contact the administrator "
-            "or check the email configuration."
+        raise RuntimeError(
+            "Account was created, but verification email "
+            "could not be sent. Check SMTP settings."
         )
 
-    return True, (
-        "Your account has been created. "
-        "Check your email for the verification code."
-    )
+    st.session_state["pending_email"] = email
+
+    return True
 
 
-# ------------------------------------------------------------
-# EMAIL VERIFICATION
-# ------------------------------------------------------------
+# ============================================================
+# 7. EMAIL VERIFICATION
+# ============================================================
 
 def verify_registration_code(email, code):
 
-    email = normalise_email(email)
+    email = normalize_email(email)
+    code = str(code).strip()
 
     user = get_user_by_email(email)
 
     if not user:
-        return False, "Account not found."
+        return False
 
-    if user["is_verified"]:
-        return True, "Your account is already verified."
+    if user.get("is_verified"):
+        return True
 
-    records = execute_sql(
+    rows = execute_sql(
         """
         SELECT *
         FROM verification_codes
@@ -833,28 +867,24 @@ def verify_registration_code(email, code):
         ORDER BY created_at DESC
         LIMIT 1
         """,
-        {
-            "user_id": user["id"],
-        },
-        fetch=True,
+        {"user_id": user["id"]},
+        fetch=True
     )
 
-    if not records:
-        return False, "No verification code was found."
+    if not rows:
+        return False
 
-    record = records[0]
+    verification = rows[0]
 
-    if record["expires_at"] < utc_now():
-        return False, "Your verification code has expired."
+    if verification["attempts"] >= MAX_VERIFICATION_ATTEMPTS:
+        return False
 
-    if record["attempts"] >= 5:
-        return False, (
-            "Too many attempts. Request a new code."
-        )
+    if verification["expires_at"] < utc_now():
+        return False
 
     if not secrets.compare_digest(
-        record["code_hash"],
-        hash_token(code.strip()),
+        hash_value(code),
+        verification["code_hash"]
     ):
 
         execute_sql(
@@ -863,22 +893,19 @@ def verify_registration_code(email, code):
             SET attempts = attempts + 1
             WHERE id = :id
             """,
-            {
-                "id": record["id"],
-            },
+            {"id": verification["id"]}
         )
 
-        return False, "Incorrect verification code."
+        return False
 
     execute_sql(
         """
         UPDATE users
-        SET is_verified = TRUE
+        SET is_verified = TRUE,
+            updated_at = NOW()
         WHERE id = :user_id
         """,
-        {
-            "user_id": user["id"],
-        },
+        {"user_id": user["id"]}
     )
 
     execute_sql(
@@ -886,270 +913,147 @@ def verify_registration_code(email, code):
         DELETE FROM verification_codes
         WHERE user_id = :user_id
         """,
-        {
-            "user_id": user["id"],
-        },
+        {"user_id": user["id"]}
     )
 
-    return True, "Your email has been verified."
+    return True
 
+
+# ============================================================
+# 8. RESEND VERIFICATION CODE
+# ============================================================
 
 def resend_verification_code(email):
 
-    email = normalise_email(email)
+    email = normalize_email(email)
 
     user = get_user_by_email(email)
 
     if not user:
-        return False, "Account not found."
+        return False
 
-    if user["is_verified"]:
-        return False, "Your account is already verified."
+    if user.get("is_verified"):
+        return True
 
-    code = f"{secrets.randbelow(1000000):06d}"
+    code = create_verification_code(user["id"])
 
-    execute_sql(
-        """
-        DELETE FROM verification_codes
-        WHERE user_id = :user_id
-        """,
-        {
-            "user_id": user["id"],
-        },
+    return send_verification_email(
+        email,
+        code
     )
 
-    execute_sql(
-        """
-        INSERT INTO verification_codes (
-            id,
-            user_id,
-            code_hash,
-            expires_at,
-            attempts
-        )
-        VALUES (
-            :id,
-            :user_id,
-            :code_hash,
-            :expires_at,
-            0
-        )
-        """,
-        {
-            "id": new_id(),
-            "user_id": user["id"],
-            "code_hash": hash_token(code),
-            "expires_at": (
-                utc_now()
-                + timedelta(minutes=VERIFICATION_MINUTES)
-            ),
-        },
-    )
 
-    if send_verification_email(email, code):
-        return True, "A new verification code has been sent."
+# ============================================================
+# 9. LOGIN ACTIVITY
+# ============================================================
 
-    return False, "Email delivery failed."
-
-
-# ------------------------------------------------------------
-# LOGIN ACTIVITY LOGGING
-# ------------------------------------------------------------
-
-def record_login_activity(user):
+def record_login_activity(user_id):
 
     execute_sql(
         """
         UPDATE users
-        SET
-            last_login = NOW(),
-            login_count = login_count + 1
+        SET last_login = NOW(),
+            login_count = login_count + 1,
+            updated_at = NOW()
         WHERE id = :user_id
         """,
-        {
-            "user_id": user["id"],
-        },
+        {"user_id": str(user_id)}
     )
 
     execute_sql(
         """
         INSERT INTO admin_activity_logs (
-            id,
-            user_id,
-            email,
-            activity
+            id, user_id, action, details, created_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :email,
-            'successful_login'
+            :id, :user_id, 'login',
+            'User signed in', NOW()
         )
         """,
         {
             "id": new_id(),
-            "user_id": user["id"],
-            "email": user["email"],
-        },
+            "user_id": str(user_id)
+        }
     )
 
 
-# ------------------------------------------------------------
-# SESSION CREATION
-# ------------------------------------------------------------
+# ============================================================
+# 10. CREATE USER SESSION
+# ============================================================
 
 def create_user_session(user_id):
 
-    raw_token = secrets.token_urlsafe(48)
+    token = generate_token()
+
+    token_hash = hash_value(token)
+
+    expires_at = utc_now() + timedelta(
+        days=SESSION_DAYS
+    )
 
     execute_sql(
         """
         INSERT INTO sessions (
-            id,
-            user_id,
-            token_hash,
-            expires_at,
-            revoked
+            id, user_id, token_hash,
+            expires_at, created_at, revoked
         )
         VALUES (
-            :id,
-            :user_id,
-            :token_hash,
-            :expires_at,
-            FALSE
+            :id, :user_id, :token_hash,
+            :expires_at, NOW(), FALSE
         )
         """,
         {
             "id": new_id(),
-            "user_id": user_id,
-            "token_hash": hash_token(raw_token),
-            "expires_at": (
-                utc_now()
-                + timedelta(days=SESSION_DAYS)
-            ),
-        },
+            "user_id": str(user_id),
+            "token_hash": token_hash,
+            "expires_at": expires_at
+        }
     )
 
-    st.session_state["auth_token"] = raw_token
+    st.session_state["vinci_session_token"] = token
 
-    return raw_token
+    return token
 
 
-def validate_user_session(raw_token):
+# ============================================================
+# 11. SESSION VALIDATION
+# ============================================================
 
-    if not raw_token:
+def validate_user_session(token):
+
+    if not token:
         return None
+
+    token_hash = hash_value(token)
 
     rows = execute_sql(
         """
-        SELECT
-            users.*,
-            sessions.id AS session_id
-        FROM sessions
-        JOIN users
-            ON users.id = sessions.user_id
-        WHERE sessions.token_hash = :token_hash
-          AND sessions.expires_at > NOW()
-          AND sessions.revoked = FALSE
-          AND users.is_active = TRUE
-          AND users.is_verified = TRUE
+        SELECT u.*
+        FROM sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token_hash = :token_hash
+          AND s.revoked = FALSE
+          AND s.expires_at > NOW()
+          AND u.is_active = TRUE
+          AND u.is_verified = TRUE
         LIMIT 1
         """,
-        {
-            "token_hash": hash_token(raw_token),
-        },
-        fetch=True,
+        {"token_hash": token_hash},
+        fetch=True
     )
 
     return rows[0] if rows else None
 
 
-def revoke_user_session():
-
-    raw_token = st.session_state.get("auth_token")
-
-    if raw_token:
-
-        execute_sql(
-            """
-            UPDATE sessions
-            SET revoked = TRUE
-            WHERE token_hash = :token_hash
-            """,
-            {
-                "token_hash": hash_token(raw_token),
-            },
-        )
-
-    st.session_state["auth_token"] = None
-
-
-# ------------------------------------------------------------
-# LOGIN
-# ------------------------------------------------------------
-
-def authenticate_user(email, password):
-
-    email = normalise_email(email)
-
-    user = get_user_by_email(email)
-
-    if not user:
-        return False, "Invalid email or password."
-
-    if not user["is_active"]:
-        return False, "This account is inactive."
-
-    if not verify_password(
-        password,
-        user["password_hash"],
-    ):
-        return False, "Invalid email or password."
-
-    if not user["is_verified"]:
-        return False, (
-            "Please verify your email before signing in."
-        )
-
-    role = sync_user_role(
-        user["id"],
-        user["email"],
-    )
-
-    user["role"] = role
-
-    record_login_activity(user)
-
-    create_user_session(user["id"])
-
-    st.session_state["authenticated"] = True
-    st.session_state["user_id"] = user["id"]
-    st.session_state["user"] = {
-        "id": user["id"],
-        "full_name": user["full_name"],
-        "email": user["email"],
-        "phone": user["phone"],
-        "job_description": user["job_description"],
-        "role": role,
-    }
-
-    st.session_state["show_login"] = False
-    st.session_state["active_workspace"] = "chat"
-    st.session_state["active_conversation"] = None
-
-    return True, "Welcome to Vinci AI."
-
-
-# ------------------------------------------------------------
-# SESSION RESTORATION
-# ------------------------------------------------------------
+# ============================================================
+# 12. RESTORE AUTHENTICATED SESSION
+# ============================================================
 
 def restore_authenticated_session():
 
-    if st.session_state.get("authenticated"):
-        return True
-
-    token = st.session_state.get("auth_token")
+    token = st.session_state.get(
+        "vinci_session_token"
+    )
 
     if not token:
         return False
@@ -1157,82 +1061,109 @@ def restore_authenticated_session():
     user = validate_user_session(token)
 
     if not user:
-        st.session_state["auth_token"] = None
         return False
 
-    role = sync_user_role(
-        user["id"],
-        user["email"],
-    )
-
+    st.session_state["auth_user"] = user
     st.session_state["authenticated"] = True
-    st.session_state["user_id"] = user["id"]
-
-    st.session_state["user"] = {
-        "id": user["id"],
-        "full_name": user["full_name"],
-        "email": user["email"],
-        "phone": user["phone"],
-        "job_description": user["job_description"],
-        "role": role,
-    }
-
-    st.session_state["show_login"] = False
 
     return True
 
 
-# ------------------------------------------------------------
-# LOGOUT
-# ------------------------------------------------------------
+# ============================================================
+# 13. REVOKE SESSION
+# ============================================================
+
+def revoke_user_session(token):
+
+    if not token:
+        return False
+
+    execute_sql(
+        """
+        UPDATE sessions
+        SET revoked = TRUE
+        WHERE token_hash = :token_hash
+        """,
+        {"token_hash": hash_value(token)}
+    )
+
+    return True
+
+
+# ============================================================
+# 14. USER AUTHENTICATION
+# ============================================================
+
+def authenticate_user(email, password):
+
+    email = normalize_email(email)
+
+    user = get_user_by_email(email)
+
+    if not user:
+        return False
+
+    if not user.get("is_active"):
+        return False
+
+    if not user.get("is_verified"):
+        return False
+
+    if not verify_password(
+        password,
+        user["password_hash"]
+    ):
+
+        return False
+
+    sync_user_role(user["id"])
+
+    record_login_activity(user["id"])
+
+    create_user_session(user["id"])
+
+    user = get_user_by_id(user["id"])
+
+    st.session_state["auth_user"] = user
+    st.session_state["authenticated"] = True
+
+    return True
+
+
+# ============================================================
+# 15. LOGOUT
+# ============================================================
 
 def logout_user():
 
-    try:
-        revoke_user_session()
-    except Exception as error:
-        logger.error(
-            "Session revocation failed: %s",
-            error,
-        )
+    token = st.session_state.get(
+        "vinci_session_token"
+    )
+
+    if token:
+        revoke_user_session(token)
 
     for key in [
+        "vinci_session_token",
+        "auth_user",
         "authenticated",
-        "user",
-        "user_id",
-        "auth_token",
-        "active_workspace",
-        "active_conversation",
-        "workspace_sessions",
-        "pending_transcription",
+        "conversation_id",
+        "document_context",
+        "chat_image",
+        "chat_image_mime",
+        "chat_uploaded_document_name"
     ]:
-        st.session_state[key] = None
 
-    st.session_state["authenticated"] = False
-    st.session_state["user"] = None
-    st.session_state["user_id"] = None
-    st.session_state["active_workspace"] = "chat"
-    st.session_state["show_login"] = True
+        st.session_state.pop(key, None)
+
+    return True
 
 
-# ------------------------------------------------------------
-# ADMIN PRIVACY AND ACCESS CONTROL
-# ------------------------------------------------------------
-
-def require_admin():
-
-    if not st.session_state.get("authenticated"):
-        st.error("Authentication required.")
-        st.stop()
-
-    if not current_user_is_admin():
-        st.error("Administrator access denied.")
-        st.stop()
-
+# ============================================================
+# 16. ADMIN USER RECORDS
+# ============================================================
 
 def get_admin_user_records():
-
-    require_admin()
 
     return execute_sql(
         """
@@ -1240,8 +1171,6 @@ def get_admin_user_records():
             id,
             full_name,
             email,
-            phone,
-            job_description,
             role,
             is_verified,
             is_active,
@@ -1250,315 +1179,214 @@ def get_admin_user_records():
             login_count
         FROM users
         ORDER BY created_at DESC
+        LIMIT 500
         """,
-        fetch=True,
+        fetch=True
     )
 
 
-def get_admin_login_activity(limit=200):
+# ============================================================
+# 17. ADMIN STATISTICS
+# ============================================================
 
-    require_admin()
+def get_admin_statistics():
 
-    limit = max(1, min(int(limit), 500))
+    queries = {
 
-    return execute_sql(
-        """
-        SELECT
-            id,
-            user_id,
-            email,
-            activity,
-            created_at
-        FROM admin_activity_logs
-        ORDER BY created_at DESC
-        LIMIT :limit
+        "total_users": "SELECT COUNT(*) AS total FROM users",
+
+        "verified_users": """
+            SELECT COUNT(*) AS total
+            FROM users WHERE is_verified = TRUE
         """,
-        {
-            "limit": limit,
-        },
-        fetch=True,
-    )
 
-
-def get_admin_database_statistics():
-
-    require_admin()
-
-    users = execute_sql(
-        """
-        SELECT COUNT(*) AS total
-        FROM users
+        "total_conversations": """
+            SELECT COUNT(*) AS total FROM conversations
         """,
-        fetch=True,
-    )[0]["total"]
 
-    verified = execute_sql(
-        """
-        SELECT COUNT(*) AS total
-        FROM users
-        WHERE is_verified = TRUE
+        "total_messages": """
+            SELECT COUNT(*) AS total FROM messages
         """,
-        fetch=True,
-    )[0]["total"]
 
-    active_sessions = execute_sql(
+        "total_images": """
+            SELECT COUNT(*) AS total FROM generated_images
         """
-        SELECT COUNT(*) AS total
-        FROM sessions
-        WHERE revoked = FALSE
-          AND expires_at > NOW()
-        """,
-        fetch=True,
-    )[0]["total"]
-
-    logins = execute_sql(
-        """
-        SELECT COUNT(*) AS total
-        FROM admin_activity_logs
-        WHERE activity = 'successful_login'
-        """,
-        fetch=True,
-    )[0]["total"]
-
-    return {
-        "users": users,
-        "verified_users": verified,
-        "active_sessions": active_sessions,
-        "successful_logins": logins,
     }
+
+    statistics = {}
+
+    for name, query in queries.items():
+
+        result = execute_sql(
+            query,
+            fetch=True
+        )
+
+        statistics[name] = result[0]["total"]
+
+    return statistics
 
 
 # ============================================================
 # END OF BLOCK 2
-# CONTINUE DIRECTLY WITH BLOCK 3
 # ============================================================
 
 # ============================================================
-# VINCI AI — BLOCK 3 OF 6
-# GEMINI + OPENROUTER PROVIDER ENGINE
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 3 OF 6
+# AI PROVIDERS, GEMINI, OPENROUTER AND MODEL ROUTING
 # ============================================================
 
-import asyncio
+# ============================================================
+# 1. PROVIDER CONFIGURATION
+# ============================================================
 
-
-# ------------------------------------------------------------
-# PROVIDER CONFIGURATION
-# ------------------------------------------------------------
-
-GEMINI_API_URL = (
+GEMINI_API_BASE = (
     "https://generativelanguage.googleapis.com/v1beta/models"
 )
 
-OPENROUTER_MODELS_URL = (
-    "https://openrouter.ai/api/v1/models"
-)
-
-OPENROUTER_CHAT_URL = (
-    "https://openrouter.ai/api/v1/chat/completions"
-)
-
-CHAT_PRIMARY_MODEL = get_secret(
-    "CHAT_PRIMARY_MODEL",
-    DEFAULT_CHAT_PRIMARY,
-)
-
-CHAT_FALLBACK_MODEL = get_secret(
-    "CHAT_FALLBACK_MODEL",
-    DEFAULT_CHAT_FALLBACK,
-)
-
-RESEARCH_PRIMARY_MODEL = get_secret(
-    "RESEARCH_PRIMARY_MODEL",
-    DEFAULT_RESEARCH_PRIMARY,
-)
-
-RESEARCH_FALLBACK_MODEL = get_secret(
-    "RESEARCH_FALLBACK_MODEL",
-    DEFAULT_RESEARCH_FALLBACK,
-)
-
-OPENROUTER_RESEARCH_MODEL = get_secret(
-    "OPENROUTER_RESEARCH_MODEL",
-    "",
-)
+OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
 AI_REQUEST_TIMEOUT = 90
 
-MAX_AI_OUTPUT_TOKENS = 4096
+AI_SYSTEM_INSTRUCTION = """
+You are VINCI AI, the intelligent assistant of the
+JTEG Intelligence Platform.
 
-AI_TEMPERATURE = 0.6
+You are a capable, professional, accurate and helpful
+AI assistant.
 
+Your areas of assistance include:
+- Engineering and technology
+- Science and mathematics
+- Software development
+- Artificial intelligence
+- Robotics and automation
+- Business and entrepreneurship
+- Education and research
+- General knowledge and productivity
 
-# ------------------------------------------------------------
-# PROVIDER STATUS
-# ------------------------------------------------------------
+Give clear, structured and accurate answers.
 
-def provider_status():
+Do not invent facts, sources, capabilities or results.
+When uncertain, explain the uncertainty.
 
-    return {
-        "gemini": {
-            "configured": bool(GEMINI_API_KEY),
-            "chat_primary": CHAT_PRIMARY_MODEL,
-            "chat_fallback": CHAT_FALLBACK_MODEL,
-            "research_primary": RESEARCH_PRIMARY_MODEL,
-            "research_fallback": RESEARCH_FALLBACK_MODEL,
-        },
-
-        "openrouter": {
-            "configured": bool(OPENROUTER_API_KEY),
-            "research_enabled": bool(
-                OPENROUTER_API_KEY
-                and OPENROUTER_POLICY["enabled"]
-            ),
-            "research_model": (
-                OPENROUTER_RESEARCH_MODEL
-                or "Not configured"
-            ),
-            "paid_models_allowed": False,
-        },
-    }
+For engineering and technical subjects, explain
+important safety limitations.
+"""
 
 
-# ------------------------------------------------------------
-# MODEL REQUEST HELPERS
-# ------------------------------------------------------------
+# ============================================================
+# 2. PROVIDER USAGE LOGGING
+# ============================================================
 
-def normalise_history(history):
+def record_provider_usage(
+    provider,
+    model,
+    workspace="Chat",
+    success=True,
+    user_id=None
+):
 
-    normalised = []
+    try:
 
-    for item in history:
+        execute_sql(
+            """
+            INSERT INTO provider_usage (
+                id, user_id, provider, model,
+                workspace, success, created_at
+            )
+            VALUES (
+                :id, :user_id, :provider, :model,
+                :workspace, :success, NOW()
+            )
+            """,
+            {
+                "id": new_id(),
+                "user_id": str(user_id) if user_id else None,
+                "provider": safe_text(provider, 100),
+                "model": safe_text(model, 200),
+                "workspace": safe_text(workspace, 100),
+                "success": bool(success)
+            }
+        )
 
-        if not isinstance(item, dict):
-            continue
+    except Exception:
+
+        logger.exception("Provider usage logging failed.")
+
+
+# ============================================================
+# 3. GEMINI REQUEST
+# ============================================================
+
+def call_gemini(
+    prompt,
+    history=None,
+    model=None,
+    system_instruction=None
+):
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Gemini API key is missing.")
+
+    selected_model = model or PRIMARY_MODEL
+
+    url = (
+        f"{GEMINI_API_BASE}/{selected_model}:generateContent"
+    )
+
+    contents = []
+
+    for item in history or []:
 
         role = item.get("role", "user")
-
-        content = str(
-            item.get("content", "")
-        ).strip()
-
-        if not content:
-            continue
 
         if role not in ["user", "assistant", "model"]:
             continue
 
-        if role == "assistant":
-            role = "model"
-
-        normalised.append({
-            "role": role,
-            "content": content,
-        })
-
-    return normalised
-
-
-def build_gemini_contents(history):
-
-    contents = []
-
-    for item in normalise_history(history):
-
-        role = item["role"]
-
-        if role == "model":
-            role = "model"
-
-        contents.append({
-            "role": role,
-            "parts": [
-                {
-                    "text": item["content"]
-                }
-            ],
-        })
-
-    return contents
-
-
-# ------------------------------------------------------------
-# GEMINI API REQUEST
-# ------------------------------------------------------------
-
-def ask_gemini(
-    prompt,
-    history=None,
-    system_instruction=None,
-    model=None,
-    temperature=None,
-    max_output_tokens=None,
-):
-    """
-    Direct Gemini REST API integration.
-
-    This avoids depending on an unverified SDK method signature.
-    """
-
-    if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "Gemini API key is not configured."
+        gemini_role = (
+            "model" if role == "assistant" else role
         )
 
-    model = model or CHAT_PRIMARY_MODEL
+        content = safe_text(item.get("content"), 30000)
 
-    history = history or []
-
-    contents = build_gemini_contents(history)
+        if content:
+            contents.append({
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            })
 
     contents.append({
         "role": "user",
-        "parts": [
-            {
-                "text": str(prompt)
-            }
-        ],
+        "parts": [{"text": safe_text(prompt, 50000)}]
     })
 
     payload = {
+        "systemInstruction": {
+            "parts": [{
+                "text": system_instruction or AI_SYSTEM_INSTRUCTION
+            }]
+        },
         "contents": contents,
         "generationConfig": {
-            "temperature": (
-                AI_TEMPERATURE
-                if temperature is None
-                else temperature
-            ),
-            "maxOutputTokens": (
-                MAX_AI_OUTPUT_TOKENS
-                if max_output_tokens is None
-                else max_output_tokens
-            ),
-        },
+            "temperature": 0.7,
+            "topP": 0.95,
+            "maxOutputTokens": 8192
+        }
     }
 
-    if system_instruction:
-        payload["systemInstruction"] = {
-            "parts": [
-                {
-                    "text": str(system_instruction)
-                }
-            ]
-        }
-
-    endpoint = (
-        f"{GEMINI_API_URL}/{model}:generateContent"
-    )
-
     response = httpx.post(
-        endpoint,
-        params={
-            "key": GEMINI_API_KEY,
-        },
+        url,
+        params={"key": GEMINI_API_KEY},
         json=payload,
-        timeout=AI_REQUEST_TIMEOUT,
+        timeout=AI_REQUEST_TIMEOUT
     )
 
     if response.status_code != 200:
 
         raise RuntimeError(
-            f"Gemini API error "
-            f"{response.status_code}: "
+            f"Gemini returned HTTP {response.status_code}: "
             f"{response.text[:1000]}"
         )
 
@@ -1567,9 +1395,7 @@ def ask_gemini(
     candidates = data.get("candidates", [])
 
     if not candidates:
-        raise RuntimeError(
-            "Gemini returned no response candidates."
-        )
+        raise RuntimeError("Gemini returned no response.")
 
     parts = (
         candidates[0]
@@ -1584,214 +1410,95 @@ def ask_gemini(
     ).strip()
 
     if not answer:
-        raise RuntimeError(
-            "Gemini returned an empty response."
-        )
+        raise RuntimeError("Gemini returned empty text.")
 
-    usage = data.get("usageMetadata", {})
-
-    return {
-        "text": answer,
-        "provider": "Gemini",
-        "model": model,
-        "input_tokens": usage.get(
-            "promptTokenCount", 0
-        ),
-        "output_tokens": usage.get(
-            "candidatesTokenCount", 0
-        ),
-    }
+    return answer
 
 
-# ------------------------------------------------------------
-# OPENROUTER FREE-MODEL VALIDATION
-# ------------------------------------------------------------
+# ============================================================
+# 4. OPENROUTER FREE MODEL VALIDATION
+# ============================================================
 
-@st.cache_data(ttl=900)
-def get_openrouter_free_models():
+def is_approved_free_model(model):
 
-    if not OPENROUTER_API_KEY:
-        return []
+    model = str(model or "").strip()
 
-    try:
-
-        response = httpx.get(
-            OPENROUTER_MODELS_URL,
-            headers={
-                "Authorization": (
-                    f"Bearer {OPENROUTER_API_KEY}"
-                ),
-            },
-            timeout=30,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        free_models = []
-
-        for item in data.get("data", []):
-
-            pricing = item.get("pricing", {})
-
-            prompt_price = str(
-                pricing.get("prompt", "")
-            )
-
-            completion_price = str(
-                pricing.get("completion", "")
-            )
-
-            try:
-                is_free = (
-                    float(prompt_price) == 0
-                    and float(completion_price) == 0
-                )
-            except (TypeError, ValueError):
-                is_free = False
-
-            if not is_free:
-                continue
-
-            model_id = item.get("id", "")
-
-            if not model_id:
-                continue
-
-            free_models.append({
-                "id": model_id,
-                "name": item.get(
-                    "name",
-                    model_id,
-                ),
-            })
-
-        return free_models
-
-    except Exception as error:
-
-        logger.warning(
-            "OpenRouter model discovery failed: %s",
-            error,
-        )
-
-        return []
-
-
-def validate_openrouter_free_model(model_id):
-
-    if not OPENROUTER_API_KEY:
+    if not model:
         return False
 
-    if not model_id:
-        return False
-
-    models = get_openrouter_free_models()
-
-    return any(
-        item["id"] == model_id
-        for item in models
-    )
+    # Only explicitly identified free models are accepted.
+    return model.endswith(":free")
 
 
-# ------------------------------------------------------------
-# OPENROUTER RESEARCH REQUEST
-# ------------------------------------------------------------
+# ============================================================
+# 5. OPENROUTER REQUEST
+# ============================================================
 
-def ask_openrouter_research(
+def call_openrouter(
     prompt,
     history=None,
-    system_instruction=None,
     model=None,
+    system_instruction=None
 ):
-    """
-    OpenRouter is restricted to Deep Research.
-
-    A model is accepted only if the live model catalogue
-    reports zero input and output token pricing.
-    """
 
     if not OPENROUTER_API_KEY:
+        raise RuntimeError("OpenRouter API key is missing.")
+
+    selected_model = model
+
+    if not is_approved_free_model(selected_model):
+
         raise RuntimeError(
-            "OpenRouter API key is not configured."
+            "OpenRouter model rejected. "
+            "Only models ending in :free are permitted."
         )
 
-    if not OPENROUTER_POLICY["enabled"]:
-        raise RuntimeError(
-            "OpenRouter research access is disabled."
-        )
+    messages = [{
+        "role": "system",
+        "content": system_instruction or AI_SYSTEM_INSTRUCTION
+    }]
 
-    selected_model = (
-        model
-        or OPENROUTER_RESEARCH_MODEL
-    )
+    for item in history or []:
 
-    if not selected_model:
-        raise RuntimeError(
-            "No OpenRouter research model configured."
-        )
+        role = item.get("role", "user")
 
-    if not validate_openrouter_free_model(
-        selected_model
-    ):
-        raise RuntimeError(
-            "The selected OpenRouter model is not "
-            "verified as free. Paid-model requests blocked."
-        )
+        if role not in ["user", "assistant"]:
+            continue
 
-    messages = []
+        content = safe_text(item.get("content"), 30000)
 
-    if system_instruction:
-        messages.append({
-            "role": "system",
-            "content": str(system_instruction),
-        })
-
-    for item in normalise_history(history or []):
-
-        messages.append({
-            "role": (
-                "assistant"
-                if item["role"] == "model"
-                else item["role"]
-            ),
-            "content": item["content"],
-        })
+        if content:
+            messages.append({
+                "role": role,
+                "content": content
+            })
 
     messages.append({
         "role": "user",
-        "content": str(prompt),
+        "content": safe_text(prompt, 50000)
     })
 
-    payload = {
-        "model": selected_model,
-        "messages": messages,
-        "temperature": AI_TEMPERATURE,
-        "max_tokens": MAX_AI_OUTPUT_TOKENS,
-    }
-
     response = httpx.post(
-        OPENROUTER_CHAT_URL,
+        f"{OPENROUTER_API_BASE}/chat/completions",
         headers={
-            "Authorization": (
-                f"Bearer {OPENROUTER_API_KEY}"
-            ),
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": (
-                "https://vinci-ai.jteg"
-            ),
-            "X-Title": "Vinci AI",
+            "HTTP-Referer": "https://vinci-ai.streamlit.app",
+            "X-Title": "VINCI AI"
         },
-        json=payload,
-        timeout=AI_REQUEST_TIMEOUT,
+        json={
+            "model": selected_model,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 8192
+        },
+        timeout=AI_REQUEST_TIMEOUT
     )
 
     if response.status_code != 200:
 
         raise RuntimeError(
-            f"OpenRouter API error "
-            f"{response.status_code}: "
+            f"OpenRouter returned HTTP {response.status_code}: "
             f"{response.text[:1000]}"
         )
 
@@ -1800,9 +1507,7 @@ def ask_openrouter_research(
     choices = data.get("choices", [])
 
     if not choices:
-        raise RuntimeError(
-            "OpenRouter returned no response."
-        )
+        raise RuntimeError("OpenRouter returned no response.")
 
     answer = (
         choices[0]
@@ -1818,955 +1523,683 @@ def ask_openrouter_research(
             if isinstance(item, dict)
         )
 
-    answer = str(answer).strip()
+    answer = str(answer or "").strip()
 
     if not answer:
-        raise RuntimeError(
-            "OpenRouter returned an empty response."
-        )
+        raise RuntimeError("OpenRouter returned empty text.")
 
-    usage = data.get("usage", {})
-
-    return {
-        "text": answer,
-        "provider": "OpenRouter",
-        "model": selected_model,
-        "input_tokens": usage.get(
-            "prompt_tokens", 0
-        ),
-        "output_tokens": usage.get(
-            "completion_tokens", 0
-        ),
-    }
+    return answer
 
 
-# ------------------------------------------------------------
-# PROVIDER USAGE RECORDING
-# ------------------------------------------------------------
+# ============================================================
+# 6. GENERAL CHAT MODEL ROUTER
+# ============================================================
 
-def record_provider_usage(
-    provider,
-    model,
-    workspace,
-    status,
-    input_tokens=0,
-    output_tokens=0,
+def generate_ai_response(
+    prompt,
+    history=None,
+    workspace="Chat",
+    user_id=None,
+    system_instruction=None
 ):
 
-    user_id = st.session_state.get("user_id")
+    prompt = safe_text(prompt, MAX_DOCUMENT_CHARS)
 
-    try:
+    if not prompt:
+        raise ValueError("Your message cannot be empty.")
 
-        execute_sql(
-            """
-            INSERT INTO provider_usage (
-                id,
-                user_id,
-                provider,
+    models = [
+        PRIMARY_MODEL,
+        FALLBACK_MODEL
+    ]
+
+    errors = []
+
+    for model in models:
+
+        try:
+
+            answer = call_gemini(
+                prompt=prompt,
+                history=history,
+                model=model,
+                system_instruction=system_instruction
+            )
+
+            record_provider_usage(
+                "Gemini",
                 model,
                 workspace,
-                status,
-                input_tokens,
-                output_tokens
-            )
-            VALUES (
-                :id,
-                :user_id,
-                :provider,
-                :model,
-                :workspace,
-                :status,
-                :input_tokens,
-                :output_tokens
-            )
-            """,
-            {
-                "id": new_id(),
-                "user_id": user_id,
-                "provider": provider,
-                "model": model,
-                "workspace": workspace,
-                "status": status,
-                "input_tokens": int(
-                    input_tokens or 0
-                ),
-                "output_tokens": int(
-                    output_tokens or 0
-                ),
-            },
-        )
-
-    except Exception as error:
-
-        logger.warning(
-            "Provider usage recording failed: %s",
-            error,
-        )
-
-
-# ------------------------------------------------------------
-# GENERAL CHAT ROUTER
-# ------------------------------------------------------------
-
-def generate_chat_answer(
-    prompt,
-    history=None,
-):
-
-    attempts = [
-        (
-            "Gemini",
-            CHAT_PRIMARY_MODEL,
-        ),
-        (
-            "Gemini",
-            CHAT_FALLBACK_MODEL,
-        ),
-    ]
-
-    failures = []
-
-    for provider, model in attempts:
-
-        try:
-
-            result = ask_gemini(
-                prompt=prompt,
-                history=history,
-                model=model,
-                system_instruction=(
-                    "You are Vinci AI, the intelligent "
-                    "assistant of the JTEG Intelligence "
-                    "Platform. Give accurate, useful, "
-                    "clear and well-structured answers. "
-                    "Do not invent sources or facts."
-                ),
+                True,
+                user_id
             )
 
-            record_provider_usage(
-                provider="Gemini",
-                model=model,
-                workspace="chat",
-                status="success",
-                input_tokens=result["input_tokens"],
-                output_tokens=result["output_tokens"],
-            )
-
-            return result
+            return {
+                "success": True,
+                "answer": answer,
+                "provider": "Gemini",
+                "model": model
+            }
 
         except Exception as error:
 
-            failures.append(
-                f"{model}: {str(error)[:250]}"
-            )
+            errors.append(f"{model}: {error}")
 
             record_provider_usage(
-                provider="Gemini",
-                model=model,
-                workspace="chat",
-                status="failed",
+                "Gemini",
+                model,
+                workspace,
+                False,
+                user_id
             )
 
-            logger.warning(
-                "Chat model %s failed: %s",
-                model,
-                error,
+            logger.exception(
+                "Gemini model %s failed.",
+                model
             )
 
     raise RuntimeError(
-        "All general chat models failed. "
-        + " | ".join(failures)
+        "All configured Gemini models failed. "
+        + " | ".join(errors)
     )
 
 
-# ------------------------------------------------------------
-# DEEP RESEARCH MODEL ROUTER
-# ------------------------------------------------------------
+# ============================================================
+# 7. DEEP RESEARCH MODEL ROUTER
+# ============================================================
 
-def generate_research_answer(
+def generate_research_ai_response(
     prompt,
     history=None,
-    use_openrouter=False,
+    user_id=None,
+    system_instruction=None
 ):
 
-    """
-    Gemini remains the configured research primary
-    and fallback.
+    prompt = safe_text(prompt, MAX_DOCUMENT_CHARS)
 
-    OpenRouter is an optional research-only route.
-    It is never used for ordinary chat.
-    """
+    if not prompt:
+        raise ValueError("Research prompt cannot be empty.")
 
-    if use_openrouter:
-
-        try:
-
-            result = ask_openrouter_research(
-                prompt=prompt,
-                history=history,
-                system_instruction=(
-                    "You are Vinci AI Deep Research. "
-                    "Produce rigorous, structured analysis. "
-                    "Distinguish verified facts from "
-                    "uncertainty and avoid fabricated citations."
-                ),
-            )
-
-            record_provider_usage(
-                provider="OpenRouter",
-                model=result["model"],
-                workspace="deep_research",
-                status="success",
-                input_tokens=result["input_tokens"],
-                output_tokens=result["output_tokens"],
-            )
-
-            return result
-
-        except Exception as error:
-
-            logger.warning(
-                "OpenRouter research route unavailable: %s",
-                error,
-            )
-
-            record_provider_usage(
-                provider="OpenRouter",
-                model=(
-                    OPENROUTER_RESEARCH_MODEL
-                    or "unconfigured"
-                ),
-                workspace="deep_research",
-                status="failed",
-            )
-
-    attempts = [
+    models = [
         RESEARCH_PRIMARY_MODEL,
-        RESEARCH_FALLBACK_MODEL,
+        RESEARCH_FALLBACK_MODEL
     ]
 
-    failures = []
+    errors = []
 
-    for model in attempts:
+    for model in models:
 
         try:
 
-            result = ask_gemini(
+            answer = call_gemini(
                 prompt=prompt,
                 history=history,
                 model=model,
-                temperature=0.3,
-                max_output_tokens=MAX_AI_OUTPUT_TOKENS,
-                system_instruction=(
-                    "You are Vinci AI Professional Deep "
-                    "Research. Analyse the question carefully. "
-                    "Organise the answer into an executive "
-                    "summary, detailed findings, evidence, "
-                    "limitations and conclusion. Never "
-                    "invent references, URLs or quotations."
-                ),
+                system_instruction=system_instruction
             )
 
             record_provider_usage(
-                provider="Gemini",
-                model=model,
-                workspace="deep_research",
-                status="success",
-                input_tokens=result["input_tokens"],
-                output_tokens=result["output_tokens"],
+                "Gemini",
+                model,
+                "Deep Research",
+                True,
+                user_id
             )
 
-            return result
+            return {
+                "success": True,
+                "answer": answer,
+                "provider": "Gemini",
+                "model": model
+            }
 
         except Exception as error:
 
-            failures.append(
-                f"{model}: {str(error)[:250]}"
+            errors.append(f"{model}: {error}")
+
+            record_provider_usage(
+                "Gemini",
+                model,
+                "Deep Research",
+                False,
+                user_id
+            )
+
+            logger.exception(
+                "Research Gemini model failed."
+            )
+
+    # OpenRouter is optional and research-only.
+    if (
+        OPENROUTER_API_KEY
+        and is_approved_free_model(
+            OPENROUTER_RESEARCH_MODEL
+        )
+    ):
+
+        try:
+
+            answer = call_openrouter(
+                prompt=prompt,
+                history=history,
+                model=OPENROUTER_RESEARCH_MODEL,
+                system_instruction=system_instruction
             )
 
             record_provider_usage(
-                provider="Gemini",
-                model=model,
-                workspace="deep_research",
-                status="failed",
+                "OpenRouter",
+                OPENROUTER_RESEARCH_MODEL,
+                "Deep Research",
+                True,
+                user_id
             )
 
-            logger.warning(
-                "Research model %s failed: %s",
-                model,
-                error,
+            return {
+                "success": True,
+                "answer": answer,
+                "provider": "OpenRouter",
+                "model": OPENROUTER_RESEARCH_MODEL
+            }
+
+        except Exception as error:
+
+            errors.append(f"OpenRouter: {error}")
+
+            record_provider_usage(
+                "OpenRouter",
+                OPENROUTER_RESEARCH_MODEL,
+                "Deep Research",
+                False,
+                user_id
+            )
+
+            logger.exception(
+                "OpenRouter research request failed."
             )
 
     raise RuntimeError(
-        "All research models failed. "
-        + " | ".join(failures)
+        "All configured research providers failed. "
+        + " | ".join(errors)
     )
 
 
-# ------------------------------------------------------------
-# MODEL CONNECTION TESTS
-# ------------------------------------------------------------
+# ============================================================
+# 8. AI HEALTH CHECK
+# ============================================================
 
-def test_gemini_connection(model):
+def get_ai_provider_status():
 
-    try:
-
-        result = ask_gemini(
-            prompt=(
-                "Reply with exactly: "
-                "Vinci AI connection successful."
-            ),
-            model=model,
-            max_output_tokens=50,
-        )
-
-        return {
-            "success": True,
-            "model": model,
-            "message": result["text"],
-        }
-
-    except Exception as error:
-
-        return {
-            "success": False,
-            "model": model,
-            "message": str(error),
-        }
-
-
-def test_openrouter_connection():
-
-    if not OPENROUTER_RESEARCH_MODEL:
-        return {
-            "success": False,
-            "message": (
-                "Configure OPENROUTER_RESEARCH_MODEL "
-                "with a verified free model ID."
-            ),
-        }
-
-    try:
-
-        result = ask_openrouter_research(
-            prompt=(
-                "Reply with exactly: "
-                "Vinci AI OpenRouter connection successful."
-            ),
-            model=OPENROUTER_RESEARCH_MODEL,
-        )
-
-        return {
-            "success": True,
-            "model": result["model"],
-            "message": result["text"],
-        }
-
-    except Exception as error:
-
-        return {
-            "success": False,
-            "model": OPENROUTER_RESEARCH_MODEL,
-            "message": str(error),
-        }
+    return {
+        "Gemini configured": bool(GEMINI_API_KEY),
+        "OpenRouter configured": bool(OPENROUTER_API_KEY),
+        "OpenRouter research model approved": (
+            is_approved_free_model(
+                OPENROUTER_RESEARCH_MODEL
+            )
+        ),
+        "General primary model": PRIMARY_MODEL,
+        "General fallback model": FALLBACK_MODEL,
+        "Research primary model": RESEARCH_PRIMARY_MODEL,
+        "Research fallback model": RESEARCH_FALLBACK_MODEL
+    }
 
 
 # ============================================================
 # END OF BLOCK 3
-# CONTINUE DIRECTLY WITH BLOCK 4
+# ============================================================
+                
+# ============================================================
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 4 OF 6
+# CHAT HISTORY, SAVED ITEMS, LIBRARY AND WORKSPACES
 # ============================================================
 
 # ============================================================
-# VINCI AI — BLOCK 4 OF 6
-# CONVERSATIONS, SAVED, LIBRARY AND SCHEDULE
+# 1. AUTHENTICATED USER HELPER
 # ============================================================
 
-from pathlib import Path
-from pypdf import PdfReader
-from docx import Document
+def get_current_user_id():
+
+    user = st.session_state.get("auth_user")
+
+    if not isinstance(user, dict):
+        return None
+
+    return user.get("id")
 
 
-# ------------------------------------------------------------
-# FILE STORAGE CONFIGURATION
-# ------------------------------------------------------------
+def require_user_id():
 
-STORAGE_ROOT = Path(
-    get_secret(
-        "VINCI_STORAGE_PATH",
-        "vinci_storage",
-    )
-)
-
-UPLOAD_DIRECTORY = STORAGE_ROOT / "uploads"
-IMAGE_DIRECTORY = STORAGE_ROOT / "images"
-AUDIO_DIRECTORY = STORAGE_ROOT / "audio"
-
-for directory in [
-    STORAGE_ROOT,
-    UPLOAD_DIRECTORY,
-    IMAGE_DIRECTORY,
-    AUDIO_DIRECTORY,
-]:
-    directory.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-
-# ------------------------------------------------------------
-# ADDITIONAL DATABASE TABLES
-# ------------------------------------------------------------
-
-def initialize_extended_database():
-
-    statements = [
-
-        """
-        CREATE TABLE IF NOT EXISTS generated_images (
-            id VARCHAR(36) PRIMARY KEY,
-            user_id VARCHAR(36) NOT NULL
-                REFERENCES users(id) ON DELETE CASCADE,
-            prompt TEXT NOT NULL,
-            image_path TEXT NOT NULL,
-            model VARCHAR(200),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-
-        """
-        CREATE INDEX IF NOT EXISTS idx_conversations_user
-        ON conversations(user_id, updated_at DESC)
-        """,
-
-        """
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation
-        ON messages(conversation_id, created_at)
-        """,
-
-        """
-        CREATE INDEX IF NOT EXISTS idx_saved_user
-        ON saved_items(user_id, created_at DESC)
-        """,
-
-        """
-        CREATE INDEX IF NOT EXISTS idx_reminders_user
-        ON reminders(user_id, scheduled_at)
-        """,
-
-    ]
-
-    engine = get_database_engine()
-
-    if engine is None:
-        raise RuntimeError(
-            "PostgreSQL is not configured."
-        )
-
-    with engine.begin() as connection:
-
-        for statement in statements:
-            connection.execute(text(statement))
-
-
-# ------------------------------------------------------------
-# CONVERSATION MANAGEMENT
-# ------------------------------------------------------------
-
-def create_conversation(
-    title="New conversation",
-    workspace="chat",
-):
-
-    user_id = st.session_state.get("user_id")
+    user_id = get_current_user_id()
 
     if not user_id:
-        raise RuntimeError(
-            "User authentication is required."
+        raise PermissionError(
+            "Please sign in to continue."
         )
 
+    return str(user_id)
+
+
+# ============================================================
+# 2. CONVERSATION MANAGEMENT
+# ============================================================
+
+def create_conversation(title="New conversation"):
+
+    user_id = require_user_id()
     conversation_id = new_id()
 
     execute_sql(
         """
         INSERT INTO conversations (
-            id,
-            user_id,
-            title,
-            workspace
+            id, user_id, title, is_archived,
+            created_at, updated_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :title,
-            :workspace
+            :id, :user_id, :title, FALSE, NOW(), NOW()
         )
         """,
         {
             "id": conversation_id,
             "user_id": user_id,
-            "title": title[:300],
-            "workspace": workspace,
-        },
+            "title": safe_text(title, 300)
+        }
     )
+
+    st.session_state["conversation_id"] = conversation_id
 
     return conversation_id
 
 
-def owns_conversation(conversation_id):
+def get_conversations(limit=100, include_archived=False):
 
-    if not conversation_id:
-        return False
+    user_id = require_user_id()
+
+    limit = max(1, min(int(limit), 200))
+
+    return execute_sql(
+        """
+        SELECT
+            id, title, is_archived,
+            created_at, updated_at
+        FROM conversations
+        WHERE user_id = :user_id
+          AND (
+              :include_archived = TRUE
+              OR is_archived = FALSE
+          )
+        ORDER BY updated_at DESC
+        LIMIT :limit
+        """,
+        {
+            "user_id": user_id,
+            "include_archived": bool(include_archived),
+            "limit": limit
+        },
+        fetch=True
+    )
+
+
+def get_conversation(conversation_id):
+
+    user_id = require_user_id()
 
     rows = execute_sql(
         """
-        SELECT id
+        SELECT *
         FROM conversations
-        WHERE id = :conversation_id
+        WHERE id = :id
           AND user_id = :user_id
         LIMIT 1
         """,
         {
-            "conversation_id": conversation_id,
-            "user_id": st.session_state.get("user_id"),
+            "id": str(conversation_id),
+            "user_id": user_id
         },
-        fetch=True,
+        fetch=True
     )
 
-    return bool(rows)
+    return rows[0] if rows else None
 
+
+def rename_conversation(conversation_id, title):
+
+    user_id = require_user_id()
+
+    return execute_sql(
+        """
+        UPDATE conversations
+        SET title = :title,
+            updated_at = NOW()
+        WHERE id = :id
+          AND user_id = :user_id
+        """,
+        {
+            "id": str(conversation_id),
+            "user_id": user_id,
+            "title": safe_text(title, 300)
+        }
+    ) > 0
+
+
+def archive_conversation(conversation_id):
+
+    user_id = require_user_id()
+
+    return execute_sql(
+        """
+        UPDATE conversations
+        SET is_archived = TRUE,
+            updated_at = NOW()
+        WHERE id = :id
+          AND user_id = :user_id
+        """,
+        {
+            "id": str(conversation_id),
+            "user_id": user_id
+        }
+    ) > 0
+
+
+def delete_conversation(conversation_id):
+
+    user_id = require_user_id()
+
+    deleted = execute_sql(
+        """
+        DELETE FROM conversations
+        WHERE id = :id
+          AND user_id = :user_id
+        """,
+        {
+            "id": str(conversation_id),
+            "user_id": user_id
+        }
+    )
+
+    if (
+        st.session_state.get("conversation_id")
+        == str(conversation_id)
+    ):
+        st.session_state["conversation_id"] = None
+
+    return deleted > 0
+
+
+# ============================================================
+# 3. MESSAGE MANAGEMENT
+# ============================================================
 
 def save_message(
     conversation_id,
     role,
-    content,
-    model=None,
+    content
 ):
 
-    if not owns_conversation(conversation_id):
+    user_id = require_user_id()
+
+    role = str(role).lower().strip()
+
+    if role not in ["user", "assistant", "system"]:
+        raise ValueError("Invalid message role.")
+
+    conversation = get_conversation(conversation_id)
+
+    if not conversation:
         raise PermissionError(
-            "You do not own this conversation."
+            "Conversation not found or access denied."
         )
 
-    if role not in ["user", "assistant"]:
-        raise ValueError("Invalid message role.")
+    content = safe_text(content, MAX_DOCUMENT_CHARS)
+
+    if not content:
+        raise ValueError("Message content cannot be empty.")
 
     message_id = new_id()
 
     execute_sql(
         """
         INSERT INTO messages (
-            id,
-            conversation_id,
-            user_id,
-            role,
-            content,
-            model
+            id, conversation_id, user_id,
+            role, content, created_at
         )
         VALUES (
-            :id,
-            :conversation_id,
-            :user_id,
-            :role,
-            :content,
-            :model
+            :id, :conversation_id, :user_id,
+            :role, :content, NOW()
         )
         """,
         {
             "id": message_id,
-            "conversation_id": conversation_id,
-            "user_id": st.session_state["user_id"],
+            "conversation_id": str(conversation_id),
+            "user_id": user_id,
             "role": role,
-            "content": str(content),
-            "model": model,
-        },
+            "content": content
+        }
     )
 
     execute_sql(
         """
         UPDATE conversations
         SET updated_at = NOW()
-        WHERE id = :conversation_id
+        WHERE id = :id
+          AND user_id = :user_id
         """,
         {
-            "conversation_id": conversation_id,
-        },
+            "id": str(conversation_id),
+            "user_id": user_id
+        }
     )
 
     return message_id
 
 
-def read_messages(conversation_id):
+def get_messages(conversation_id, limit=100):
 
-    if not owns_conversation(conversation_id):
-        return []
+    user_id = require_user_id()
+
+    conversation = get_conversation(conversation_id)
+
+    if not conversation:
+        raise PermissionError(
+            "Conversation not found or access denied."
+        )
+
+    limit = max(1, min(int(limit), 300))
 
     return execute_sql(
         """
-        SELECT
-            id,
-            role,
-            content,
-            model,
-            created_at
+        SELECT id, role, content, created_at
         FROM messages
         WHERE conversation_id = :conversation_id
           AND user_id = :user_id
-        ORDER BY created_at ASC
+        ORDER BY created_at DESC
+        LIMIT :limit
         """,
         {
-            "conversation_id": conversation_id,
-            "user_id": st.session_state["user_id"],
+            "conversation_id": str(conversation_id),
+            "user_id": user_id,
+            "limit": limit
         },
-        fetch=True,
+        fetch=True
+    )[::-1]
+
+
+def get_ai_history(conversation_id, limit=20):
+
+    messages = get_messages(
+        conversation_id,
+        limit=limit
     )
 
-
-def list_conversations(workspace=None):
-
-    query = """
-        SELECT
-            id,
-            title,
-            workspace,
-            created_at,
-            updated_at
-        FROM conversations
-        WHERE user_id = :user_id
-          AND archived = FALSE
-    """
-
-    parameters = {
-        "user_id": st.session_state["user_id"],
-    }
-
-    if workspace:
-        query += " AND workspace = :workspace"
-        parameters["workspace"] = workspace
-
-    query += " ORDER BY updated_at DESC"
-
-    return execute_sql(
-        query,
-        parameters,
-        fetch=True,
-    )
-
-
-def rename_conversation(
-    conversation_id,
-    new_title,
-):
-
-    if not owns_conversation(conversation_id):
-        return False
-
-    execute_sql(
-        """
-        UPDATE conversations
-        SET title = :title,
-            updated_at = NOW()
-        WHERE id = :conversation_id
-          AND user_id = :user_id
-        """,
+    return [
         {
-            "title": new_title.strip()[:300],
-            "conversation_id": conversation_id,
-            "user_id": st.session_state["user_id"],
-        },
-    )
-
-    return True
-
-
-def archive_conversation(conversation_id):
-
-    if not owns_conversation(conversation_id):
-        return False
-
-    execute_sql(
-        """
-        UPDATE conversations
-        SET archived = TRUE
-        WHERE id = :conversation_id
-          AND user_id = :user_id
-        """,
-        {
-            "conversation_id": conversation_id,
-            "user_id": st.session_state["user_id"],
-        },
-    )
-
-    if (
-        st.session_state.get("active_conversation")
-        == conversation_id
-    ):
-        st.session_state["active_conversation"] = None
-
-    return True
+            "role": item["role"],
+            "content": item["content"]
+        }
+        for item in messages
+        if item["role"] in ["user", "assistant"]
+    ]
 
 
-def start_new_chat(workspace="chat"):
+def generate_conversation_title(first_message):
 
-    conversation_id = create_conversation(
-        workspace=workspace,
-    )
+    title = safe_text(first_message, 80)
 
-    st.session_state["active_conversation"] = (
-        conversation_id
-    )
+    if not title:
+        return "New conversation"
 
-    st.session_state["active_workspace"] = workspace
-
-    return conversation_id
+    return title[:77] + "..." if len(title) > 80 else title
 
 
-# ------------------------------------------------------------
-# MESSAGE SAVING AND PERSONAL CONTENT
-# ------------------------------------------------------------
+# ============================================================
+# 4. SAVED ITEMS
+# ============================================================
 
 def save_item(
-    item_type,
     title,
     content,
-    source_id=None,
+    item_type="general"
 ):
+
+    user_id = require_user_id()
 
     item_id = new_id()
 
     execute_sql(
         """
         INSERT INTO saved_items (
-            id,
-            user_id,
-            item_type,
-            title,
-            content,
-            source_id
+            id, user_id, title,
+            content, item_type, created_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :item_type,
-            :title,
-            :content,
-            :source_id
+            :id, :user_id, :title,
+            :content, :item_type, NOW()
         )
         """,
         {
             "id": item_id,
-            "user_id": st.session_state["user_id"],
-            "item_type": item_type,
-            "title": title[:300],
-            "content": content,
-            "source_id": source_id,
-        },
+            "user_id": user_id,
+            "title": safe_text(title, 300),
+            "content": safe_text(content, MAX_DOCUMENT_CHARS),
+            "item_type": safe_text(item_type, 50)
+        }
     )
 
     return item_id
 
 
-def get_saved_items(item_type=None):
+def get_saved_items(limit=100):
 
-    query = """
+    user_id = require_user_id()
+
+    limit = max(1, min(int(limit), 200))
+
+    return execute_sql(
+        """
         SELECT *
         FROM saved_items
         WHERE user_id = :user_id
-    """
-
-    parameters = {
-        "user_id": st.session_state["user_id"],
-    }
-
-    if item_type:
-        query += " AND item_type = :item_type"
-        parameters["item_type"] = item_type
-
-    query += " ORDER BY created_at DESC"
-
-    return execute_sql(
-        query,
-        parameters,
-        fetch=True,
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        {
+            "user_id": user_id,
+            "limit": limit
+        },
+        fetch=True
     )
 
 
 def delete_saved_item(item_id):
 
-    execute_sql(
+    user_id = require_user_id()
+
+    return execute_sql(
         """
         DELETE FROM saved_items
         WHERE id = :id
           AND user_id = :user_id
         """,
         {
-            "id": item_id,
-            "user_id": st.session_state["user_id"],
-        },
-    )
+            "id": str(item_id),
+            "user_id": user_id
+        }
+    ) > 0
 
 
-# ------------------------------------------------------------
-# DOCUMENT EXTRACTION
-# ------------------------------------------------------------
+# ============================================================
+# 5. LIBRARY FILE RECORDS
+# ============================================================
 
-def extract_document_text(
+def save_library_file(
     filename,
-    file_bytes,
+    storage_path,
+    file_type=None,
+    file_size=0,
+    extracted_text=""
 ):
 
-    extension = Path(filename).suffix.lower()
-
-    try:
-
-        if extension == ".pdf":
-
-            reader = PdfReader(
-                io.BytesIO(file_bytes)
-            )
-
-            content = "\n".join(
-                page.extract_text() or ""
-                for page in reader.pages
-            )
-
-        elif extension == ".docx":
-
-            document = Document(
-                io.BytesIO(file_bytes)
-            )
-
-            content = "\n".join(
-                paragraph.text
-                for paragraph in document.paragraphs
-            )
-
-        elif extension in [
-            ".txt",
-            ".md",
-            ".csv",
-            ".json",
-            ".py",
-            ".html",
-        ]:
-
-            content = file_bytes.decode(
-                "utf-8",
-                errors="replace",
-            )
-
-        else:
-
-            return None, (
-                "This document format is not supported."
-            )
-
-        return (
-            content[:MAX_DOCUMENT_CHARS],
-            None,
-        )
-
-    except Exception as error:
-
-        logger.warning(
-            "Document extraction failed: %s",
-            error,
-        )
-
-        return None, (
-            "Unable to extract text from this document."
-        )
-
-
-# ------------------------------------------------------------
-# LIBRARY FILE MANAGEMENT
-# ------------------------------------------------------------
-
-def store_library_file(
-    filename,
-    file_bytes,
-):
-
-    user_id = st.session_state["user_id"]
-
-    if len(file_bytes) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise ValueError(
-            "The file exceeds the upload limit."
-        )
-
-    extension = Path(filename).suffix.lower()
-
-    if not re.fullmatch(
-        r"\.[a-z0-9]{1,10}",
-        extension,
-    ):
-        extension = ".bin"
+    user_id = require_user_id()
 
     file_id = new_id()
-
-    safe_filename = (
-        file_id + extension
-    )
-
-    destination = (
-        UPLOAD_DIRECTORY / safe_filename
-    )
-
-    destination.write_bytes(file_bytes)
 
     execute_sql(
         """
         INSERT INTO library_files (
-            id,
-            user_id,
-            filename,
-            storage_path,
-            file_type,
-            file_size
+            id, user_id, filename, storage_path,
+            file_type, file_size, extracted_text,
+            created_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :filename,
-            :storage_path,
-            :file_type,
-            :file_size
+            :id, :user_id, :filename, :storage_path,
+            :file_type, :file_size, :extracted_text,
+            NOW()
         )
         """,
         {
             "id": file_id,
             "user_id": user_id,
-            "filename": Path(filename).name[:300],
-            "storage_path": str(destination),
-            "file_type": mimetypes.guess_type(filename)[0],
-            "file_size": len(file_bytes),
-        },
+            "filename": safe_text(filename, 500),
+            "storage_path": safe_text(storage_path, 2000),
+            "file_type": safe_text(file_type, 100),
+            "file_size": max(0, int(file_size)),
+            "extracted_text": safe_text(
+                extracted_text,
+                MAX_DOCUMENT_CHARS
+            )
+        }
     )
 
     return file_id
 
 
-def get_library_files():
+def get_library_files(limit=100):
+
+    user_id = require_user_id()
+
+    limit = max(1, min(int(limit), 200))
 
     return execute_sql(
         """
         SELECT
-            id,
-            filename,
-            file_type,
-            file_size,
-            created_at
+            id, filename, file_type,
+            file_size, created_at
         FROM library_files
         WHERE user_id = :user_id
         ORDER BY created_at DESC
+        LIMIT :limit
         """,
         {
-            "user_id": st.session_state["user_id"],
+            "user_id": user_id,
+            "limit": limit
         },
-        fetch=True,
+        fetch=True
     )
 
 
-def read_library_file(file_id):
+def get_library_file(file_id):
+
+    user_id = require_user_id()
 
     rows = execute_sql(
         """
@@ -2777,51 +2210,25 @@ def read_library_file(file_id):
         LIMIT 1
         """,
         {
-            "id": file_id,
-            "user_id": st.session_state["user_id"],
+            "id": str(file_id),
+            "user_id": user_id
         },
-        fetch=True,
+        fetch=True
     )
 
-    if not rows:
-        raise PermissionError(
-            "This file does not belong to your account."
-        )
-
-    path = Path(rows[0]["storage_path"])
-
-    if not path.exists():
-        raise FileNotFoundError(
-            "The stored file is unavailable."
-        )
-
-    return rows[0], path.read_bytes()
+    return rows[0] if rows else None
 
 
 def delete_library_file(file_id):
 
-    rows = execute_sql(
-        """
-        SELECT storage_path
-        FROM library_files
-        WHERE id = :id
-          AND user_id = :user_id
-        LIMIT 1
-        """,
-        {
-            "id": file_id,
-            "user_id": st.session_state["user_id"],
-        },
-        fetch=True,
-    )
+    user_id = require_user_id()
 
-    if not rows:
+    file_record = get_library_file(file_id)
+
+    if not file_record:
         return False
 
-    path = Path(rows[0]["storage_path"])
-
-    if path.exists():
-        path.unlink()
+    storage_path = file_record.get("storage_path")
 
     execute_sql(
         """
@@ -2830,66 +2237,54 @@ def delete_library_file(file_id):
           AND user_id = :user_id
         """,
         {
-            "id": file_id,
-            "user_id": st.session_state["user_id"],
-        },
+            "id": str(file_id),
+            "user_id": user_id
+        }
     )
+
+    # Delete only files inside the application's
+    # configured local storage directory.
+    if storage_path:
+
+        try:
+
+            base = Path("vinci_storage").resolve()
+            target = Path(storage_path).resolve()
+
+            if base in target.parents and target.is_file():
+                target.unlink()
+
+        except Exception:
+
+            logger.exception(
+                "Library file cleanup failed."
+            )
 
     return True
 
 
-# ------------------------------------------------------------
-# DOCUMENT UPLOAD PROCESSING
-# ------------------------------------------------------------
-
-def process_uploaded_document(uploaded_file):
-
-    if uploaded_file is None:
-        return None
-
-    file_bytes = uploaded_file.getvalue()
-
-    if len(file_bytes) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise ValueError(
-            f"Maximum upload size is {MAX_UPLOAD_MB} MB."
-        )
-
-    extracted_text, error = extract_document_text(
-        uploaded_file.name,
-        file_bytes,
-    )
-
-    file_id = store_library_file(
-        uploaded_file.name,
-        file_bytes,
-    )
-
-    return {
-        "id": file_id,
-        "filename": uploaded_file.name,
-        "text": extracted_text or "",
-        "error": error,
-    }
-
-
-# ------------------------------------------------------------
-# SCHEDULE AND REMINDERS
-# ------------------------------------------------------------
+# ============================================================
+# 6. REMINDERS AND SCHEDULE
+# ============================================================
 
 def create_reminder(
     title,
-    description,
-    scheduled_at,
+    reminder_time,
+    description=""
 ):
 
-    if scheduled_at.tzinfo is None:
-        scheduled_at = scheduled_at.replace(
-            tzinfo=timezone.utc
+    user_id = require_user_id()
+
+    if isinstance(reminder_time, str):
+
+        reminder_time = datetime.fromisoformat(
+            reminder_time.replace("Z", "+00:00")
         )
 
-    if scheduled_at <= utc_now():
-        raise ValueError(
-            "Choose a future reminder time."
+    if reminder_time.tzinfo is None:
+
+        reminder_time = reminder_time.replace(
+            tzinfo=timezone.utc
         )
 
     reminder_id = new_id()
@@ -2897,837 +2292,989 @@ def create_reminder(
     execute_sql(
         """
         INSERT INTO reminders (
-            id,
-            user_id,
-            title,
-            description,
-            scheduled_at
+            id, user_id, title, description,
+            reminder_time, is_completed, created_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :title,
-            :description,
-            :scheduled_at
+            :id, :user_id, :title, :description,
+            :reminder_time, FALSE, NOW()
         )
         """,
         {
             "id": reminder_id,
-            "user_id": st.session_state["user_id"],
-            "title": title.strip()[:300],
-            "description": description,
-            "scheduled_at": scheduled_at,
-        },
+            "user_id": user_id,
+            "title": safe_text(title, 300),
+            "description": safe_text(description, 5000),
+            "reminder_time": reminder_time
+        }
     )
 
     return reminder_id
 
 
-def get_reminders():
+def get_reminders(limit=100):
+
+    user_id = require_user_id()
+
+    limit = max(1, min(int(limit), 200))
 
     return execute_sql(
         """
         SELECT *
         FROM reminders
         WHERE user_id = :user_id
-        ORDER BY scheduled_at ASC
+        ORDER BY reminder_time ASC
+        LIMIT :limit
         """,
         {
-            "user_id": st.session_state["user_id"],
+            "user_id": user_id,
+            "limit": limit
         },
-        fetch=True,
+        fetch=True
     )
 
 
 def complete_reminder(reminder_id):
 
-    execute_sql(
+    user_id = require_user_id()
+
+    return execute_sql(
         """
         UPDATE reminders
-        SET completed = TRUE
+        SET is_completed = TRUE
         WHERE id = :id
           AND user_id = :user_id
         """,
         {
-            "id": reminder_id,
-            "user_id": st.session_state["user_id"],
-        },
-    )
+            "id": str(reminder_id),
+            "user_id": user_id
+        }
+    ) > 0
 
 
 def delete_reminder(reminder_id):
 
-    execute_sql(
+    user_id = require_user_id()
+
+    return execute_sql(
         """
         DELETE FROM reminders
         WHERE id = :id
           AND user_id = :user_id
         """,
         {
-            "id": reminder_id,
-            "user_id": st.session_state["user_id"],
-        },
+            "id": str(reminder_id),
+            "user_id": user_id
+        }
+    ) > 0
+
+
+# ============================================================
+# 7. WORKSPACE SESSION PERSISTENCE
+# ============================================================
+
+def save_workspace_session(workspace, session_data):
+
+    user_id = require_user_id()
+
+    workspace = safe_text(workspace, 100)
+
+    if not workspace:
+        raise ValueError("Workspace name is required.")
+
+    if not isinstance(session_data, dict):
+        raise ValueError("Workspace data must be a dictionary.")
+
+    serialized = json.dumps(
+        session_data,
+        ensure_ascii=False,
+        default=str
     )
-
-
-# ------------------------------------------------------------
-# WORKSPACE SESSION STATE
-# ------------------------------------------------------------
-
-def save_workspace_state(
-    workspace,
-    state,
-):
 
     execute_sql(
         """
         INSERT INTO workspace_sessions (
-            id,
-            user_id,
-            workspace,
-            state_json,
-            updated_at
+            id, user_id, workspace,
+            session_data, updated_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :workspace,
-            CAST(:state_json AS JSONB),
-            NOW()
+            :id, :user_id, :workspace,
+            CAST(:session_data AS JSONB), NOW()
         )
         ON CONFLICT (user_id, workspace)
         DO UPDATE SET
-            state_json = EXCLUDED.state_json,
+            session_data = EXCLUDED.session_data,
             updated_at = NOW()
         """,
         {
             "id": new_id(),
-            "user_id": st.session_state["user_id"],
+            "user_id": user_id,
             "workspace": workspace,
-            "state_json": json.dumps(state),
-        },
+            "session_data": serialized
+        }
     )
 
+    st.session_state.setdefault(
+        "workspace_sessions", {}
+    )[workspace] = session_data
 
-def load_workspace_state(workspace):
+    return True
+
+
+def load_workspace_session(workspace):
+
+    user_id = require_user_id()
 
     rows = execute_sql(
         """
-        SELECT state_json
+        SELECT session_data
         FROM workspace_sessions
         WHERE user_id = :user_id
           AND workspace = :workspace
         LIMIT 1
         """,
         {
-            "user_id": st.session_state["user_id"],
-            "workspace": workspace,
+            "user_id": user_id,
+            "workspace": safe_text(workspace, 100)
         },
-        fetch=True,
+        fetch=True
     )
 
     if not rows:
         return {}
 
-    state = rows[0]["state_json"]
+    data = rows[0]["session_data"]
 
-    if isinstance(state, str):
-        return json.loads(state)
+    if isinstance(data, str):
 
-    return state or {}
+        try:
+            data = json.loads(data)
+
+        except Exception:
+            data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    st.session_state.setdefault(
+        "workspace_sessions", {}
+    )[workspace] = data
+
+    return data
+
+
+# ============================================================
+# 8. ADMIN ACTIVITY LOGGING
+# ============================================================
+
+def record_admin_activity(action, details=""):
+
+    user_id = get_current_user_id()
+
+    execute_sql(
+        """
+        INSERT INTO admin_activity_logs (
+            id, user_id, action, details, created_at
+        )
+        VALUES (
+            :id, :user_id, :action, :details, NOW()
+        )
+        """,
+        {
+            "id": new_id(),
+            "user_id": str(user_id) if user_id else None,
+            "action": safe_text(action, 200),
+            "details": safe_text(details, 5000)
+        }
+    )
+
+    return True
+
+
+# ============================================================
+# 9. ADMIN USER MANAGEMENT
+# ============================================================
+
+def admin_update_user_status(user_id, is_active):
+
+    if not current_user_is_admin():
+        raise PermissionError("Administrator access required.")
+
+    result = execute_sql(
+        """
+        UPDATE users
+        SET is_active = :is_active,
+            updated_at = NOW()
+        WHERE id = :user_id
+        """,
+        {
+            "user_id": str(user_id),
+            "is_active": bool(is_active)
+        }
+    )
+
+    if result:
+
+        if not is_active:
+
+            execute_sql(
+                """
+                UPDATE sessions
+                SET revoked = TRUE
+                WHERE user_id = :user_id
+                """,
+                {"user_id": str(user_id)}
+            )
+
+        record_admin_activity(
+            "user_status_changed",
+            f"User {user_id}; active={bool(is_active)}"
+        )
+
+    return result > 0
+
+
+def get_admin_recent_activity(limit=100):
+
+    if not current_user_is_admin():
+        raise PermissionError("Administrator access required.")
+
+    limit = max(1, min(int(limit), 200))
+
+    return execute_sql(
+        """
+        SELECT
+            id, user_id, action,
+            details, created_at
+        FROM admin_activity_logs
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        {"limit": limit},
+        fetch=True
+    )
 
 
 # ============================================================
 # END OF BLOCK 4
-# CONTINUE DIRECTLY WITH BLOCK 5
 # ============================================================
 
 # ============================================================
-# VINCI AI — BLOCK 5 OF 6
-# DEEP RESEARCH, IMAGE STUDIO AND VOICE
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 5 OF 6
+# DEEP RESEARCH, IMAGE STUDIO, DOCUMENTS AND VOICE
 # ============================================================
 
-from ddgs import DDGS
-from PIL import Image
+import csv
+import tempfile
 
 
-# ------------------------------------------------------------
-# DEEP RESEARCH CONFIGURATION
-# ------------------------------------------------------------
+# ============================================================
+# 1. STORAGE CONFIGURATION
+# ============================================================
 
-RESEARCH_SYSTEM_PROMPT = """
-You are Vinci AI Professional Deep Research.
+STORAGE_DIRECTORY = Path("vinci_storage")
 
-Your task is to produce detailed, structured and
-evidence-conscious research.
+STORAGE_DIRECTORY.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
-Requirements:
-
-1. Understand the research question before answering.
-2. Use the supplied research material.
-3. Separate confirmed information from assumptions.
-4. Identify disagreements between sources.
-5. Explain limitations and missing evidence.
-6. Never invent sources, quotations, statistics or URLs.
-7. Use clear professional language.
-
-Organise substantial reports using:
-
-- Research title
-- Executive summary
-- Research objectives
-- Background and context
-- Detailed findings
-- Evidence and source discussion
-- Analysis
-- Limitations
-- Conclusion
-- References
-"""
+MAX_AUDIO_MB = 20
+MAX_IMAGE_MB = 15
 
 
-# ------------------------------------------------------------
-# WEB SOURCE DISCOVERY
-# ------------------------------------------------------------
+def save_uploaded_file(uploaded_file, user_id):
 
-def search_research_sources(
-    query,
-    max_results=8,
-):
+    if uploaded_file is None:
+        raise ValueError("No file was supplied.")
 
-    results = []
+    file_bytes = uploaded_file.getvalue()
+
+    if len(file_bytes) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise ValueError("File exceeds the upload limit.")
+
+    user_directory = (
+        STORAGE_DIRECTORY / str(user_id)
+    ).resolve()
+
+    user_directory.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    original_name = Path(
+        uploaded_file.name
+    ).name
+
+    extension = Path(original_name).suffix.lower()
+
+    if not re.fullmatch(r"\.[a-z0-9]{1,10}", extension):
+        extension = ""
+
+    stored_name = f"{new_id()}{extension}"
+
+    destination = (
+        user_directory / stored_name
+    ).resolve()
+
+    if user_directory not in destination.parents:
+        raise ValueError("Invalid storage path.")
+
+    destination.write_bytes(file_bytes)
+
+    return {
+        "path": str(destination),
+        "filename": original_name,
+        "size": len(file_bytes),
+        "type": uploaded_file.type or "application/octet-stream"
+    }
+
+
+# ============================================================
+# 2. DOCUMENT TEXT EXTRACTION
+# ============================================================
+
+def extract_document_text(file_bytes, filename):
+
+    extension = Path(filename).suffix.lower()
+
+    if extension == ".txt":
+
+        return file_bytes.decode(
+            "utf-8",
+            errors="replace"
+        )[:MAX_DOCUMENT_CHARS]
+
+    if extension == ".csv":
+
+        text_content = file_bytes.decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        return text_content[:MAX_DOCUMENT_CHARS]
+
+    if extension == ".pdf":
+
+        try:
+
+            from pypdf import PdfReader
+
+            reader = PdfReader(
+                io.BytesIO(file_bytes)
+            )
+
+            extracted = []
+
+            for page in reader.pages[:100]:
+
+                extracted.append(
+                    page.extract_text() or ""
+                )
+
+            return "\n".join(
+                extracted
+            )[:MAX_DOCUMENT_CHARS]
+
+        except Exception as error:
+
+            raise RuntimeError(
+                f"PDF extraction failed: {error}"
+            )
+
+    if extension == ".docx":
+
+        try:
+
+            from docx import Document
+
+            document = Document(
+                io.BytesIO(file_bytes)
+            )
+
+            paragraphs = [
+                paragraph.text
+                for paragraph in document.paragraphs
+                if paragraph.text.strip()
+            ]
+
+            return "\n".join(
+                paragraphs
+            )[:MAX_DOCUMENT_CHARS]
+
+        except Exception as error:
+
+            raise RuntimeError(
+                f"DOCX extraction failed: {error}"
+            )
+
+    if extension == ".xlsx":
+
+        try:
+
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(
+                io.BytesIO(file_bytes),
+                read_only=True,
+                data_only=True
+            )
+
+            extracted = []
+
+            for sheet in workbook.worksheets:
+
+                extracted.append(
+                    f"WORKSHEET: {sheet.title}"
+                )
+
+                for row in sheet.iter_rows(
+                    max_row=500,
+                    values_only=True
+                ):
+
+                    values = [
+                        str(value)
+                        for value in row
+                        if value is not None
+                    ]
+
+                    if values:
+                        extracted.append(
+                            " | ".join(values)
+                        )
+
+            workbook.close()
+
+            return "\n".join(
+                extracted
+            )[:MAX_DOCUMENT_CHARS]
+
+        except Exception as error:
+
+            raise RuntimeError(
+                f"Excel extraction failed: {error}"
+            )
+
+    if extension in [".png", ".jpg", ".jpeg", ".webp"]:
+
+        try:
+
+            from PIL import Image
+            import pytesseract
+
+            image = Image.open(
+                io.BytesIO(file_bytes)
+            )
+
+            return pytesseract.image_to_string(
+                image
+            )[:MAX_DOCUMENT_CHARS]
+
+        except Exception:
+
+            return (
+                "Image uploaded. Text extraction is unavailable. "
+                "Use VINCI AI image analysis."
+            )
+
+    raise ValueError(
+        "Unsupported document format. "
+        "Supported formats: PDF, DOCX, XLSX, CSV, TXT and images."
+    )
+
+
+# ============================================================
+# 3. DOCUMENT UPLOAD AND LIBRARY REGISTRATION
+# ============================================================
+
+def process_library_upload(uploaded_file):
+
+    user_id = require_user_id()
+
+    stored = save_uploaded_file(
+        uploaded_file,
+        user_id
+    )
+
+    extracted = ""
 
     try:
 
-        with DDGS() as search_engine:
-
-            search_results = search_engine.text(
-                query,
-                max_results=max_results,
-            )
-
-            for item in search_results:
-
-                title = item.get("title", "")
-                body = item.get("body", "")
-                url = item.get("href", "")
-
-                if not title or not url:
-                    continue
-
-                results.append({
-                    "title": title,
-                    "snippet": body,
-                    "url": url,
-                })
-
-    except Exception as error:
-
-        logger.warning(
-            "Research source search failed: %s",
-            error,
+        extracted = extract_document_text(
+            uploaded_file.getvalue(),
+            uploaded_file.name
         )
 
-    return results
+    except Exception:
 
-
-# ------------------------------------------------------------
-# RESEARCH MATERIAL FORMATTER
-# ------------------------------------------------------------
-
-def format_research_sources(sources):
-
-    if not sources:
-        return (
-            "No external search results were available. "
-            "Do not claim that external sources were checked."
+        logger.exception(
+            "Document extraction failed."
         )
 
-    formatted = []
+    file_id = save_library_file(
+        filename=stored["filename"],
+        storage_path=stored["path"],
+        file_type=stored["type"],
+        file_size=stored["size"],
+        extracted_text=extracted
+    )
 
-    for index, source in enumerate(
-        sources,
-        start=1,
-    ):
-
-        formatted.append(
-            f"""
-SOURCE {index}
-
-Title: {source['title']}
-
-Summary:
-{source['snippet']}
-
-URL:
-{source['url']}
-"""
-        )
-
-    return "\n\n".join(formatted)
+    return {
+        "id": file_id,
+        "filename": stored["filename"],
+        "size": stored["size"],
+        "type": stored["type"],
+        "extracted_text": extracted
+    }
 
 
-# ------------------------------------------------------------
-# PROFESSIONAL RESEARCH WORKFLOW
-# ------------------------------------------------------------
+# ============================================================
+# 4. DOCUMENT ANALYSIS
+# ============================================================
 
-def conduct_deep_research(
-    research_question,
-    use_openrouter=False,
+def analyze_document(
+    document_text,
+    question,
+    user_id=None
 ):
 
-    research_question = research_question.strip()
-
-    if len(research_question) < 5:
-        raise ValueError(
-            "Enter a more detailed research question."
-        )
-
-    sources = search_research_sources(
-        research_question,
-        max_results=8,
+    document_text = safe_text(
+        document_text,
+        MAX_DOCUMENT_CHARS
     )
 
-    source_material = format_research_sources(
-        sources
-    )
+    question = safe_text(question, 10000)
 
-    research_prompt = f"""
-RESEARCH QUESTION:
+    if not document_text:
+        raise ValueError("No document text is available.")
 
-{research_question}
+    prompt = f"""
+Analyze the following document carefully.
 
+USER'S QUESTION:
+{question or "Provide a comprehensive summary."}
 
-EXTERNAL RESEARCH MATERIAL:
+DOCUMENT:
+{document_text}
 
-{source_material}
-
-
-INSTRUCTIONS:
-
-Prepare a professional research report.
-
-Use the supplied source material carefully.
-
-Reference sources using their supplied titles and URLs.
-
-Do not claim that a source supports a statement unless
-the supplied material actually supports that statement.
-
-If the search results are insufficient, state that
-additional research is required.
+Instructions:
+1. Use only information supported by the document.
+2. Distinguish facts from interpretations.
+3. Identify important sections and findings.
+4. Explain technical terms where necessary.
+5. Mention missing or unclear information.
+6. Do not invent information.
 """
 
-    result = generate_research_answer(
-        prompt=research_prompt,
-        history=None,
-        use_openrouter=use_openrouter,
+    return generate_ai_response(
+        prompt=prompt,
+        workspace="Document Analysis",
+        user_id=user_id
     )
 
-    result["sources"] = sources
 
-    result["research_question"] = research_question
+# ============================================================
+# 5. DEEP RESEARCH
+# ============================================================
+
+def run_deep_research(
+    research_question,
+    source_material="",
+    user_id=None
+):
+
+    research_question = safe_text(
+        research_question,
+        10000
+    )
+
+    source_material = safe_text(
+        source_material,
+        MAX_DOCUMENT_CHARS
+    )
+
+    if not research_question:
+        raise ValueError(
+            "Enter a research question."
+        )
+
+    research_prompt = f"""
+You are VINCI AI's Deep Research analyst.
+
+RESEARCH QUESTION:
+{research_question}
+
+USER-PROVIDED SOURCE MATERIAL:
+{source_material or "No source material supplied."}
+
+Produce a professional research report.
+
+Use this structure:
+
+1. Executive Summary
+2. Background and Context
+3. Main Findings
+4. Technical or Scientific Explanation
+5. Opportunities
+6. Challenges and Limitations
+7. Practical Recommendations
+8. Conclusion
+9. Further Research Questions
+
+IMPORTANT:
+- Never invent citations or claim to have searched the internet.
+- Identify which conclusions are based on supplied material.
+- Clearly distinguish established facts from estimates.
+- Explain uncertainty.
+- Use tables where useful.
+- Be comprehensive and analytical.
+"""
+
+    result = generate_research_ai_response(
+        prompt=research_prompt,
+        user_id=user_id,
+        system_instruction=AI_SYSTEM_INSTRUCTION
+    )
+
+    st.session_state["research_result"] = result
 
     return result
 
 
-# ------------------------------------------------------------
-# RESEARCH REPORT SAVING
-# ------------------------------------------------------------
+# ============================================================
+# 6. IMAGE ANALYSIS
+# ============================================================
 
-def save_research_report(
-    question,
-    report,
-    sources,
+def analyze_uploaded_image(
+    image_bytes,
+    mime_type,
+    question="Describe and analyze this image."
 ):
 
-    source_text = "\n\n".join(
-        f"{source['title']}\n{source['url']}"
-        for source in sources
+    if not GEMINI_API_KEY:
+        raise RuntimeError("Gemini API key is missing.")
+
+    if len(image_bytes) > MAX_IMAGE_MB * 1024 * 1024:
+        raise ValueError("Image is too large.")
+
+    allowed_types = [
+        "image/png",
+        "image/jpeg",
+        "image/webp"
+    ]
+
+    if mime_type not in allowed_types:
+        raise ValueError("Unsupported image format.")
+
+    selected_model = PRIMARY_MODEL
+
+    url = (
+        f"{GEMINI_API_BASE}/{selected_model}:generateContent"
     )
-
-    complete_report = (
-        report
-        + "\n\nREFERENCES\n\n"
-        + source_text
-    )
-
-    return save_item(
-        item_type="research_report",
-        title=question[:300],
-        content=complete_report,
-    )
-
-
-# ------------------------------------------------------------
-# OPENROUTER IMAGE MODEL DISCOVERY
-# ------------------------------------------------------------
-
-@st.cache_data(ttl=900)
-def get_openrouter_image_models():
-
-    if not OPENROUTER_API_KEY:
-        return []
-
-    try:
-
-        response = httpx.get(
-            OPENROUTER_MODELS_URL,
-            headers={
-                "Authorization": (
-                    f"Bearer {OPENROUTER_API_KEY}"
-                ),
-            },
-            timeout=30,
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        available = []
-
-        for item in data.get("data", []):
-
-            pricing = item.get("pricing", {})
-
-            try:
-
-                prompt_price = float(
-                    pricing.get("prompt", -1)
-                )
-
-                completion_price = float(
-                    pricing.get("completion", -1)
-                )
-
-            except (ValueError, TypeError):
-                continue
-
-            if (
-                prompt_price != 0
-                or completion_price != 0
-            ):
-                continue
-
-            architecture = item.get(
-                "architecture", {}
-            )
-
-            output_modalities = architecture.get(
-                "output_modalities", []
-            )
-
-            if "image" not in output_modalities:
-                continue
-
-            model_id = item.get("id")
-
-            if not model_id:
-                continue
-
-            available.append({
-                "id": model_id,
-                "name": item.get(
-                    "name",
-                    model_id,
-                ),
-            })
-
-        return available
-
-    except Exception as error:
-
-        logger.warning(
-            "Image model discovery failed: %s",
-            error,
-        )
-
-        return []
-
-
-# ------------------------------------------------------------
-# IMAGE MODEL VALIDATION
-# ------------------------------------------------------------
-
-def validate_free_image_model(model_id):
-
-    if not model_id:
-        return False
-
-    models = get_openrouter_image_models()
-
-    return any(
-        model["id"] == model_id
-        for model in models
-    )
-
-
-# ------------------------------------------------------------
-# IMAGE GENERATION
-# ------------------------------------------------------------
-
-def generate_vinci_image(
-    prompt,
-    model=None,
-):
-
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError(
-            "OpenRouter is not configured."
-        )
-
-    selected_model = (
-        model
-        or OPENROUTER_IMAGE_MODEL
-    )
-
-    if not selected_model:
-        raise RuntimeError(
-            "No free image-generation model is configured."
-        )
-
-    if not validate_free_image_model(
-        selected_model
-    ):
-        raise RuntimeError(
-            "The selected image model is not verified "
-            "as a free image-output model. "
-            "Paid generation has been blocked."
-        )
 
     payload = {
-        "model": selected_model,
-        "messages": [
-            {
-                "role": "user",
-                "content": (
-                    "Create an image based on this description: "
-                    + prompt
-                ),
-            }
-        ],
-        "modalities": [
-            "image",
-            "text",
-        ],
+        "systemInstruction": {
+            "parts": [{
+                "text": AI_SYSTEM_INSTRUCTION
+            }]
+        },
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {
+                    "text": safe_text(question, 10000)
+                },
+                {
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": base64.b64encode(
+                            image_bytes
+                        ).decode("utf-8")
+                    }
+                }
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 4096
+        }
     }
 
     response = httpx.post(
-        OPENROUTER_CHAT_URL,
-        headers={
-            "Authorization": (
-                f"Bearer {OPENROUTER_API_KEY}"
-            ),
-            "Content-Type": "application/json",
-            "HTTP-Referer": (
-                "https://vinci-ai.jteg"
-            ),
-            "X-Title": "Vinci AI Image Studio",
-        },
+        url,
+        params={"key": GEMINI_API_KEY},
         json=payload,
-        timeout=180,
+        timeout=AI_REQUEST_TIMEOUT
     )
 
     if response.status_code != 200:
 
         raise RuntimeError(
-            f"Image generation failed "
-            f"({response.status_code}): "
-            f"{response.text[:1000]}"
+            f"Image analysis failed: "
+            f"{response.status_code} "
+            f"{response.text[:500]}"
         )
 
     data = response.json()
 
-    choices = data.get("choices", [])
-
-    if not choices:
-        raise RuntimeError(
-            "The image model returned no result."
-        )
-
-    message = choices[0].get(
-        "message",
-        {},
+    parts = (
+        data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [])
     )
 
-    images = message.get(
-        "images",
-        [],
+    answer = "\n".join(
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ).strip()
+
+    if not answer:
+        raise RuntimeError(
+            "No image analysis was returned."
+        )
+
+    record_provider_usage(
+        "Gemini",
+        selected_model,
+        "Image Studio",
+        True,
+        get_current_user_id()
     )
 
-    if not images:
+    return answer
+
+
+# ============================================================
+# 7. IMAGE GENERATION
+# ============================================================
+
+def generate_image(prompt, user_id=None):
+
+    if not OPENROUTER_API_KEY:
         raise RuntimeError(
-            "The selected model did not return an image. "
-            "Try another supported free image model."
+            "OpenRouter API key is missing."
         )
 
-    image_url = (
-        images[0]
-        .get("image_url", {})
-        .get("url", "")
+    model = OPENROUTER_IMAGE_MODEL
+
+    if not is_approved_free_model(model):
+
+        raise RuntimeError(
+            "Image generation requires an approved "
+            "OpenRouter model ending in :free. "
+            "No paid model will be used."
+        )
+
+    prompt = safe_text(prompt, 10000)
+
+    if not prompt:
+        raise ValueError("Image prompt is empty.")
+
+    response = httpx.post(
+        f"{OPENROUTER_API_BASE}/images/generations",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://vinci-ai.streamlit.app",
+            "X-Title": "VINCI AI Image Studio"
+        },
+        json={
+            "model": model,
+            "prompt": prompt,
+            "n": 1
+        },
+        timeout=120
     )
 
-    if not image_url.startswith("data:image/"):
-        raise RuntimeError(
-            "The returned image format is unsupported."
-        )
-
-    try:
-
-        header, encoded_data = image_url.split(
-            ",",
-            1,
-        )
-
-        image_bytes = base64.b64decode(
-            encoded_data,
-            validate=True,
-        )
-
-        image = Image.open(
-            io.BytesIO(image_bytes)
-        )
-
-        image.verify()
-
-    except Exception as error:
+    if response.status_code != 200:
 
         raise RuntimeError(
-            "The generated image could not be validated."
-        ) from error
+            "Image provider failed or does not support "
+            "image generation through this endpoint. "
+            f"HTTP {response.status_code}: "
+            f"{response.text[:700]}"
+        )
+
+    data = response.json()
+
+    image_items = data.get("data", [])
+
+    if not image_items:
+        raise RuntimeError(
+            "The image provider returned no image."
+        )
+
+    image_url = image_items[0].get("url")
+
+    if not image_url:
+        raise RuntimeError(
+            "The provider did not return a downloadable image URL."
+        )
+
+    # Download only from HTTPS.
+    if not image_url.startswith("https://"):
+        raise RuntimeError("Invalid image URL.")
+
+    image_response = httpx.get(
+        image_url,
+        timeout=60,
+        follow_redirects=False
+    )
+
+    if image_response.status_code != 200:
+        raise RuntimeError("Generated image download failed.")
+
+    image_bytes = image_response.content
+
+    if len(image_bytes) > MAX_IMAGE_MB * 1024 * 1024:
+        raise RuntimeError("Generated image exceeds the size limit.")
+
+    from PIL import Image
+
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    )
+
+    image.load()
+
+    user_id = str(user_id or require_user_id())
+
+    user_directory = (
+        STORAGE_DIRECTORY / user_id
+    ).resolve()
+
+    user_directory.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     image_id = new_id()
 
     image_path = (
-        IMAGE_DIRECTORY
-        / f"{image_id}.png"
+        user_directory / f"{image_id}.png"
+    ).resolve()
+
+    if user_directory not in image_path.parents:
+        raise RuntimeError("Invalid image storage path.")
+
+    image.convert("RGB").save(
+        image_path,
+        format="PNG"
     )
-
-    image_path.write_bytes(image_bytes)
-
-    user_id = st.session_state["user_id"]
 
     execute_sql(
         """
         INSERT INTO generated_images (
-            id,
-            user_id,
-            prompt,
-            image_path,
-            model
+            id, user_id, prompt,
+            storage_path, model, created_at
         )
         VALUES (
-            :id,
-            :user_id,
-            :prompt,
-            :image_path,
-            :model
+            :id, :user_id, :prompt,
+            :storage_path, :model, NOW()
         )
         """,
         {
             "id": image_id,
             "user_id": user_id,
             "prompt": prompt,
-            "image_path": str(image_path),
-            "model": selected_model,
-        },
+            "storage_path": str(image_path),
+            "model": model
+        }
+    )
+
+    record_provider_usage(
+        "OpenRouter",
+        model,
+        "Image Studio",
+        True,
+        user_id
     )
 
     return {
         "id": image_id,
         "path": str(image_path),
-        "model": selected_model,
         "prompt": prompt,
+        "model": model
     }
 
 
-# ------------------------------------------------------------
-# IMAGE HISTORY
-# ------------------------------------------------------------
+# ============================================================
+# 8. AUDIO TRANSCRIPTION
+# ============================================================
 
-def get_generated_images():
-
-    return execute_sql(
-        """
-        SELECT
-            id,
-            prompt,
-            image_path,
-            model,
-            created_at
-        FROM generated_images
-        WHERE user_id = :user_id
-        ORDER BY created_at DESC
-        """,
-        {
-            "user_id": st.session_state["user_id"],
-        },
-        fetch=True,
-    )
-
-
-def delete_generated_image(image_id):
-
-    rows = execute_sql(
-        """
-        SELECT image_path
-        FROM generated_images
-        WHERE id = :id
-          AND user_id = :user_id
-        LIMIT 1
-        """,
-        {
-            "id": image_id,
-            "user_id": st.session_state["user_id"],
-        },
-        fetch=True,
-    )
-
-    if not rows:
-        return False
-
-    path = Path(rows[0]["image_path"])
-
-    if path.exists():
-        path.unlink()
-
-    execute_sql(
-        """
-        DELETE FROM generated_images
-        WHERE id = :id
-          AND user_id = :user_id
-        """,
-        {
-            "id": image_id,
-            "user_id": st.session_state["user_id"],
-        },
-    )
-
-    return True
-
-
-# ------------------------------------------------------------
-# IMAGE PROMPT SUGGESTIONS
-# ------------------------------------------------------------
-
-IMAGE_PROMPT_CATEGORIES = [
-    "Photorealistic product photography",
-    "Professional engineering visualization",
-    "Architecture and building concepts",
-    "Technology and futuristic concepts",
-    "Business advertising designs",
-    "Scientific illustrations",
-    "Nature and landscape photography",
-    "Educational diagrams",
-    "Industrial machinery concepts",
-    "Creative digital artwork",
-]
-
-
-def generate_image_prompt_suggestions(
-    category,
-):
-
-    prompt = f"""
-Generate five distinct, high-quality image prompt ideas
-for the following category:
-
-{category}
-
-Each suggestion must be descriptive and suitable
-for professional image generation.
-
-Return a numbered list.
-"""
-
-    result = generate_chat_answer(
-        prompt=prompt,
-        history=None,
-    )
-
-    return result["text"]
-
-
-# ------------------------------------------------------------
-# SPEECH TRANSCRIPTION
-# ------------------------------------------------------------
-
-def transcribe_audio(
-    audio_bytes,
-    mime_type="audio/wav",
-):
+def transcribe_audio(audio_bytes, mime_type):
 
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "Gemini is not configured for transcription."
-        )
+        raise RuntimeError("Gemini API key is missing.")
 
-    encoded_audio = base64.b64encode(
-        audio_bytes
-    ).decode("utf-8")
+    if len(audio_bytes) > MAX_AUDIO_MB * 1024 * 1024:
+        raise ValueError("Audio file is too large.")
+
+    allowed_types = [
+        "audio/wav",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/aac",
+        "audio/ogg",
+        "audio/webm",
+        "audio/flac"
+    ]
+
+    if mime_type not in allowed_types:
+        raise ValueError("Unsupported audio format.")
+
+    model = PRIMARY_MODEL
+
+    url = (
+        f"{GEMINI_API_BASE}/{model}:generateContent"
+    )
 
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": (
-                            "Transcribe the spoken words "
-                            "accurately. Return only the "
-                            "transcription. Do not answer "
-                            "the speaker's question."
-                        )
-                    },
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": encoded_audio,
-                        }
-                    },
-                ],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 2048,
-        },
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {
+                    "text": (
+                        "Transcribe this audio accurately. "
+                        "Return only the spoken words. "
+                        "Preserve the original language."
+                    )
+                },
+                {
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": base64.b64encode(
+                            audio_bytes
+                        ).decode("utf-8")
+                    }
+                }
+            ]
+        }]
     }
 
     response = httpx.post(
-        (
-            f"{GEMINI_API_URL}/"
-            f"{CHAT_PRIMARY_MODEL}:generateContent"
-        ),
-        params={
-            "key": GEMINI_API_KEY,
-        },
+        url,
+        params={"key": GEMINI_API_KEY},
         json=payload,
-        timeout=120,
+        timeout=AI_REQUEST_TIMEOUT
     )
 
     if response.status_code != 200:
 
         raise RuntimeError(
-            "Speech transcription failed: "
-            + response.text[:800]
+            f"Audio transcription failed: "
+            f"{response.status_code} "
+            f"{response.text[:500]}"
         )
 
     data = response.json()
 
-    candidates = data.get(
-        "candidates",
-        [],
-    )
-
-    if not candidates:
-        raise RuntimeError(
-            "No transcription was returned."
-        )
-
     parts = (
-        candidates[0]
+        data.get("candidates", [{}])[0]
         .get("content", {})
         .get("parts", [])
     )
@@ -3740,476 +3287,166 @@ def transcribe_audio(
 
     if not transcription:
         raise RuntimeError(
-            "The recording could not be transcribed."
+            "No transcription was returned."
         )
+
+    record_provider_usage(
+        "Gemini",
+        model,
+        "Voice",
+        True,
+        get_current_user_id()
+    )
 
     return transcription
 
 
-# ------------------------------------------------------------
-# VOICE CHAT
-# ------------------------------------------------------------
+# ============================================================
+# 9. USER IMAGE HISTORY
+# ============================================================
 
-def generate_voice_chat_response(
-    spoken_text,
-):
+def get_generated_images(limit=50):
 
-    result = generate_chat_answer(
-        prompt=spoken_text,
-        history=None,
+    user_id = require_user_id()
+
+    limit = max(1, min(int(limit), 100))
+
+    return execute_sql(
+        """
+        SELECT id, prompt, storage_path, model, created_at
+        FROM generated_images
+        WHERE user_id = :user_id
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        {
+            "user_id": user_id,
+            "limit": limit
+        },
+        fetch=True
     )
-
-    return result
-
-
-# ------------------------------------------------------------
-# TEXT-TO-SPEECH
-# ------------------------------------------------------------
-
-def generate_speech_audio(text_to_speak):
-
-    try:
-        import edge_tts
-    except ImportError:
-        raise RuntimeError(
-            "Voice playback package is unavailable."
-        )
-
-    async def create_audio():
-
-        communicator = edge_tts.Communicate(
-            text_to_speak,
-            "en-US-AriaNeural",
-        )
-
-        audio_data = bytearray()
-
-        async for chunk in communicator.stream():
-
-            if chunk["type"] == "audio":
-                audio_data.extend(
-                    chunk["data"]
-                )
-
-        return bytes(audio_data)
-
-    try:
-
-        return asyncio.run(
-            create_audio()
-        )
-
-    except RuntimeError as error:
-
-        raise RuntimeError(
-            "Voice playback could not start. "
-            "Please try again."
-        ) from error
-
-
-# ------------------------------------------------------------
-# VOICE RESPONSE PACKAGE
-# ------------------------------------------------------------
-
-def create_voice_response(
-    spoken_text,
-):
-
-    result = generate_voice_chat_response(
-        spoken_text
-    )
-
-    audio = None
-
-    try:
-        audio = generate_speech_audio(
-            result["text"]
-        )
-    except Exception as error:
-        logger.warning(
-            "Voice playback unavailable: %s",
-            error,
-        )
-
-    return {
-        "text": result["text"],
-        "audio": audio,
-        "provider": result["provider"],
-        "model": result["model"],
-    }
 
 
 # ============================================================
 # END OF BLOCK 5
-# CONTINUE DIRECTLY WITH BLOCK 6
 # ============================================================
+
 # ============================================================
 # VINCI AI — JTEG INTELLIGENCE PLATFORM
 # BLOCK 6 OF 6
-# APPLICATION INTERFACE, DASHBOARD AND WORKSPACES
+# COMPLETE APPLICATION INTERFACE
 # ============================================================
-
-import streamlit as st
-import inspect
-import traceback
-from datetime import datetime, timezone
 
 
 # ============================================================
-# 1. APPLICATION STARTUP
-# ============================================================
-
-@st.cache_resource(show_spinner="Initializing VINCI AI...")
-def vinci_startup():
-
-    initialize_database()
-    initialize_extended_database()
-
-    return True
-
-
-try:
-    vinci_startup()
-
-except Exception as e:
-
-    st.error("VINCI AI could not connect to its database.")
-    st.code(str(e))
-    st.info(
-        "Check your DATABASE_URL and PostgreSQL database "
-        "configuration before continuing."
-    )
-    st.stop()
-
-
-# ============================================================
-# 2. INTERFACE CONFIGURATION
+# 1. UI CONFIGURATION
 # ============================================================
 
 st.markdown("""
 <style>
+    .stApp {
+        background: linear-gradient(
+            135deg,
+            #081526 0%,
+            #101d35 55%,
+            #17233e 100%
+        );
+    }
 
-.stApp {
-    background: #080D18;
-    color: #F4F7FF;
-}
+    h1, h2, h3, p, label {
+        color: #f4f7ff;
+    }
 
-section[data-testid="stSidebar"] {
-    background: #101827;
-    border-right: 1px solid #26344A;
-}
+    .vinci-header {
+        padding: 22px;
+        border-radius: 18px;
+        background: linear-gradient(
+            120deg,
+            #123b67,
+            #252a59
+        );
+        border: 1px solid #355b91;
+        margin-bottom: 20px;
+    }
 
-section[data-testid="stSidebar"] * {
-    color: #EAF0FF;
-}
+    .vinci-card {
+        padding: 20px;
+        border-radius: 16px;
+        background: rgba(31, 48, 78, 0.88);
+        border: 1px solid #344f75;
+        min-height: 120px;
+        margin-bottom: 12px;
+    }
 
-.vinci-brand {
-    font-size: 30px;
-    font-weight: 900;
-    letter-spacing: 3px;
-    color: #55B8FF;
-}
+    .vinci-muted {
+        color: #aab9d2;
+    }
 
-.vinci-subtitle {
-    color: #94A8C5;
-    font-size: 12px;
-    letter-spacing: 2px;
-}
-
-.vinci-card {
-    background: linear-gradient(145deg, #17253A, #101827);
-    border: 1px solid #263D5B;
-    border-radius: 16px;
-    padding: 22px;
-    min-height: 145px;
-    margin-bottom: 12px;
-}
-
-.vinci-card h3 {
-    color: #FFFFFF;
-    margin-bottom: 8px;
-}
-
-.vinci-card p {
-    color: #A9B9D1;
-    font-size: 13px;
-}
-
-.vinci-section {
-    color: #65BFFF;
-    font-weight: 800;
-    letter-spacing: 1px;
-}
-
-.vinci-footer {
-    color: #71839F;
-    font-size: 11px;
-    text-align: center;
-    padding: 20px;
-}
-
-div.stButton > button {
-    border-radius: 10px;
-    border: 1px solid #31577C;
-    background: #173451;
-    color: white;
-    font-weight: 600;
-    min-height: 42px;
-}
-
-div.stButton > button:hover {
-    background: #21649A;
-    border-color: #55B8FF;
-    color: white;
-}
-
+    .stButton button {
+        border-radius: 10px;
+        font-weight: 600;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
+def vinci_header():
+
+    st.markdown("""
+    <div class="vinci-header">
+        <h1>⚡ VINCI AI</h1>
+        <p>JTEG INTELLIGENCE PLATFORM</p>
+        <p class="vinci-muted">
+            Engineering intelligence. Research.
+            Creativity. Productivity.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def workspace_card(title, description, icon, key):
+
+    st.markdown(
+        f"""
+        <div class="vinci-card">
+            <h3>{icon} {title}</h3>
+            <p class="vinci-muted">{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if st.button(
+        f"Open {title}",
+        key=f"open_{key}",
+        use_container_width=True
+    ):
+
+        st.session_state["page"] = title
+
+        st.rerun()
+
+
 # ============================================================
-# 3. SESSION STATE
+# 2. SESSION RESTORATION
 # ============================================================
 
-DEFAULT_STATE = {
-    "vinci_page": "Chat",
-    "vinci_authenticated": False,
-    "vinci_user": None,
-    "vinci_user_id": None,
-    "vinci_user_name": None,
-    "vinci_user_email": None,
-    "vinci_conversation_id": None,
-    "vinci_pending_email": None,
-    "vinci_chat_input": "",
-    "vinci_research_result": None,
-    "vinci_image_result": None,
-    "vinci_voice_text": None,
-}
-
-for key, value in DEFAULT_STATE.items():
-
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# ============================================================
-# 4. GENERAL COMPATIBILITY HELPERS
-# ============================================================
-
-def vinci_find_function(*names):
-
-    for name in names:
-
-        fn = globals().get(name)
-
-        if callable(fn):
-            return fn
-
-    return None
-
-
-def vinci_call(names, values=None, positional=None):
-
-    if isinstance(names, str):
-        names = [names]
-
-    values = values or {}
-    positional = positional or []
-
-    fn = vinci_find_function(*names)
-
-    if fn is None:
-        raise RuntimeError(
-            "Required function not found: " + ", ".join(names)
-        )
+if not st.session_state.get("authenticated"):
 
     try:
+        restore_authenticated_session()
 
-        signature = inspect.signature(fn)
-
-        parameters = signature.parameters
-
-        if any(
-            p.kind == inspect.Parameter.VAR_KEYWORD
-            for p in parameters.values()
-        ):
-            return fn(**values)
-
-        accepted = {
-            key: value
-            for key, value in values.items()
-            if key in parameters
-        }
-
-        required = [
-            p for p in parameters.values()
-            if p.default == inspect.Parameter.empty
-            and p.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD
-            )
-        ]
-
-        missing = [
-            p.name for p in required
-            if p.name not in accepted
-        ]
-
-        if missing:
-            return fn(*positional)
-
-        return fn(**accepted)
-
-    except (TypeError, ValueError):
-
-        return fn(*positional)
-
-
-def vinci_get_user_id():
-
-    user = st.session_state.get("vinci_user")
-
-    possible_ids = [
-        st.session_state.get("vinci_user_id"),
-        st.session_state.get("user_id"),
-        st.session_state.get("current_user_id"),
-    ]
-
-    if isinstance(user, dict):
-        possible_ids.extend([
-            user.get("id"),
-            user.get("user_id"),
-        ])
-
-    for value in possible_ids:
-
-        if value:
-            return value
-
-    return None
-
-
-def vinci_get_user_name():
-
-    user = st.session_state.get("vinci_user")
-
-    possible_names = [
-        st.session_state.get("vinci_user_name"),
-        st.session_state.get("user_name"),
-        st.session_state.get("full_name"),
-    ]
-
-    if isinstance(user, dict):
-        possible_names.extend([
-            user.get("full_name"),
-            user.get("name"),
-        ])
-
-    for value in possible_names:
-
-        if value:
-            return str(value)
-
-    return "User"
-
-
-def vinci_get_user_email():
-
-    user = st.session_state.get("vinci_user")
-
-    possible_emails = [
-        st.session_state.get("vinci_user_email"),
-        st.session_state.get("user_email"),
-        st.session_state.get("email"),
-    ]
-
-    if isinstance(user, dict):
-        possible_emails.extend([
-            user.get("email"),
-        ])
-
-    for value in possible_emails:
-
-        if value:
-            return str(value)
-
-    return ""
-
-
-def vinci_sync_user():
-
-    user_id = vinci_get_user_id()
-
-    if user_id:
-
-        st.session_state["vinci_user_id"] = user_id
-        st.session_state["vinci_user_name"] = vinci_get_user_name()
-        st.session_state["vinci_user_email"] = vinci_get_user_email()
-        st.session_state["vinci_authenticated"] = True
-
-        return True
-
-    return False
-
-
-def vinci_error(message, error=None):
-
-    st.error(message)
-
-    if error is not None:
-
-        with st.expander("Technical details"):
-            st.code(str(error))
+    except Exception:
+        logger.exception("Session restoration failed.")
 
 
 # ============================================================
-# 5. BRANDING
+# 3. AUTHENTICATION INTERFACE
 # ============================================================
 
-def vinci_brand():
+def render_authentication():
 
-    st.markdown(
-        """
-        <div class="vinci-brand">VINCI AI</div>
-        <div class="vinci-subtitle">
-        JTEG INTELLIGENCE PLATFORM
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def vinci_footer():
-
-    st.markdown(
-        """
-        <div class="vinci-footer">
-        VINCI AI · POWERED BY JOSIAH TECHNOLOGIES
-        AND ENGINEERING GROUP
-        <br>
-        ENGINEERING INTELLIGENCE FOR THE FUTURE
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# ============================================================
-# 6. AUTHENTICATION
-# ============================================================
-
-def vinci_authentication_page():
-
-    vinci_brand()
-
-    st.markdown("---")
-
-    st.title("Welcome to VINCI AI")
-
-    st.write(
-        "Your intelligent workspace for research, "
-        "conversation, creativity and innovation."
-    )
+    vinci_header()
 
     login_tab, register_tab, verify_tab = st.tabs([
         "Sign In",
@@ -4217,112 +3454,74 @@ def vinci_authentication_page():
         "Verify Email"
     ])
 
-    # --------------------------------------------------------
-    # SIGN IN
-    # --------------------------------------------------------
-
     with login_tab:
 
-        st.subheader("Sign in to your account")
+        st.subheader("Welcome back")
 
         with st.form("vinci_login_form"):
 
             email = st.text_input(
-                "Email address",
-                key="vinci_login_email"
+                "Email address"
             )
 
             password = st.text_input(
                 "Password",
-                type="password",
-                key="vinci_login_password"
+                type="password"
             )
 
-            submit = st.form_submit_button(
+            submitted = st.form_submit_button(
                 "Sign In",
                 use_container_width=True
             )
 
-        if submit:
+        if submitted:
 
-            if not email or not password:
+            try:
 
-                st.warning("Enter your email and password.")
+                success = authenticate_user(
+                    email,
+                    password
+                )
 
-            else:
+                if success:
 
-                try:
+                    st.success("Login successful.")
 
-                    result = authenticate_user(
-                        email.strip().lower(),
-                        password
+                    st.session_state["page"] = "Chat"
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Login failed. Check your details, "
+                        "account verification and account status."
                     )
 
-                    if result is False or result is None:
+            except Exception as error:
 
-                        st.error(
-                            "Login unsuccessful. Check your "
-                            "credentials and verification status."
-                        )
+                logger.exception("Login failed.")
 
-                    else:
-
-                        vinci_sync_user()
-
-                        if not st.session_state.get(
-                            "vinci_authenticated"
-                        ):
-
-                            restored = restore_authenticated_session()
-
-                            if restored:
-                                vinci_sync_user()
-
-                        if st.session_state.get(
-                            "vinci_authenticated"
-                        ):
-
-                            st.success("Welcome to VINCI AI.")
-
-                            st.session_state["vinci_page"] = "Chat"
-
-                            st.rerun()
-
-                        else:
-
-                            st.warning(
-                                "Authentication was attempted, "
-                                "but a user session could not be "
-                                "confirmed. Check the authentication "
-                                "function's session-state assignments."
-                            )
-
-                except Exception as e:
-
-                    vinci_error("Unable to sign in.", e)
-
-    # --------------------------------------------------------
-    # REGISTRATION
-    # --------------------------------------------------------
+                st.error(str(error))
 
     with register_tab:
 
-        st.subheader("Create your VINCI AI account")
+        st.subheader("Create your VINCI account")
 
         with st.form("vinci_registration_form"):
 
             full_name = st.text_input("Full name")
 
-            email = st.text_input("Email address")
+            reg_email = st.text_input("Email address")
 
             phone = st.text_input("Phone number")
 
-            job_description = st.text_input(
-                "Occupation / Job description"
+            job = st.text_area(
+                "Job description"
             )
 
-            password = st.text_input(
-                "Create password",
+            reg_password = st.text_input(
+                "Password",
                 type="password"
             )
 
@@ -4331,1338 +3530,350 @@ def vinci_authentication_page():
                 type="password"
             )
 
-            submit_registration = st.form_submit_button(
+            submitted = st.form_submit_button(
                 "Create Account",
                 use_container_width=True
             )
 
-        if submit_registration:
+        if submitted:
 
-            if not all([
-                full_name,
-                email,
-                phone,
-                job_description,
-                password,
-                confirm_password
-            ]):
+            try:
 
-                st.warning("Complete all registration fields.")
+                if reg_password != confirm_password:
 
-            elif password != confirm_password:
-
-                st.error("Your passwords do not match.")
-
-            else:
-
-                try:
-
-                    result = register_user(
-                        full_name.strip(),
-                        email.strip().lower(),
-                        phone.strip(),
-                        job_description.strip(),
-                        password
+                    raise ValueError(
+                        "Passwords do not match."
                     )
 
-                    if result:
+                register_user(
+                    full_name,
+                    reg_email,
+                    phone,
+                    job,
+                    reg_password
+                )
 
-                        st.session_state[
-                            "vinci_pending_email"
-                        ] = email.strip().lower()
+                st.success(
+                    "Registration successful. "
+                    "Check your email for your verification code."
+                )
 
-                        st.success(
-                            "Registration submitted. Check your "
-                            "email for your verification code."
-                        )
+                st.session_state["pending_email"] = (
+                    normalize_email(reg_email)
+                )
 
-                    else:
+            except Exception as error:
 
-                        st.error(
-                            "Registration could not be completed. "
-                            "Check the information and try again."
-                        )
+                logger.exception("Registration failed.")
 
-                except Exception as e:
-
-                    vinci_error(
-                        "Registration failed.",
-                        e
-                    )
-
-    # --------------------------------------------------------
-    # EMAIL VERIFICATION
-    # --------------------------------------------------------
+                st.error(str(error))
 
     with verify_tab:
 
-        st.subheader("Verify your email address")
+        st.subheader("Verify your email")
 
-        pending_email = st.session_state.get(
-            "vinci_pending_email",
-            ""
-        )
-
-        verify_email = st.text_input(
+        verification_email = st.text_input(
             "Registered email",
-            value=pending_email,
-            key="vinci_verify_email"
+            value=st.session_state.get(
+                "pending_email"
+            ) or "",
+            key="verification_email_input"
         )
 
         verification_code = st.text_input(
-            "Verification code",
-            max_chars=6,
-            key="vinci_verification_code"
+            "Six-digit verification code",
+            max_chars=6
         )
 
-        col1, col2 = st.columns(2)
+        if st.button(
+            "Verify Account",
+            use_container_width=True
+        ):
 
-        with col1:
+            try:
 
-            if st.button(
-                "Verify Account",
-                use_container_width=True
-            ):
+                verified = verify_registration_code(
+                    verification_email,
+                    verification_code
+                )
 
-                if not verify_email or not verification_code:
+                if verified:
 
-                    st.warning(
-                        "Enter your email and verification code."
+                    st.success(
+                        "Email verified. You can now sign in."
                     )
 
                 else:
 
-                    try:
+                    st.error(
+                        "Verification failed. "
+                        "Check the code or request another."
+                    )
 
-                        result = verify_registration_code(
-                            verify_email.strip().lower(),
-                            verification_code.strip()
-                        )
+            except Exception as error:
 
-                        if result:
+                st.error(str(error))
 
-                            st.success(
-                                "Your email has been verified. "
-                                "You can now sign in."
-                            )
+        if st.button(
+            "Resend Verification Code",
+            use_container_width=True
+        ):
 
-                        else:
+            try:
 
-                            st.error(
-                                "Verification failed. "
-                                "Check your code or request another."
-                            )
+                resend_verification_code(
+                    verification_email
+                )
 
-                    except Exception as e:
+                st.success(
+                    "A new verification code has been sent."
+                )
 
-                        vinci_error(
-                            "Verification failed.",
-                            e
-                        )
+            except Exception as error:
 
-        with col2:
+                st.error(str(error))
+
+
+# ============================================================
+# 4. CHAT WORKSPACE
+# ============================================================
+
+def render_chat():
+
+    st.title("💬 Chat with VINCI")
+
+    user_id = require_user_id()
+
+    conversations = get_conversations()
+
+    col1, col2 = st.columns([1, 3])
+
+    with col1:
+
+        if st.button(
+            "＋ New Chat",
+            use_container_width=True
+        ):
+
+            create_conversation()
+
+            st.rerun()
+
+        st.subheader("Recent chats")
+
+        for conversation in conversations:
 
             if st.button(
-                "Resend Code",
+                conversation["title"][:35],
+                key=f"conversation_{conversation['id']}",
                 use_container_width=True
             ):
 
-                if not verify_email:
+                st.session_state["conversation_id"] = (
+                    conversation["id"]
+                )
 
-                    st.warning("Enter your registered email.")
+                st.rerun()
 
-                else:
+    with col2:
 
-                    try:
-
-                        result = resend_verification_code(
-                            verify_email.strip().lower()
-                        )
-
-                        if result:
-
-                            st.success(
-                                "A new verification code has "
-                                "been requested."
-                            )
-
-                        else:
-
-                            st.error(
-                                "Unable to resend the verification code."
-                            )
-
-                    except Exception as e:
-
-                        vinci_error(
-                            "Unable to resend verification code.",
-                            e
-                        )
-
-    vinci_footer()
-
-
-# ============================================================
-# 7. SESSION RESTORATION
-# ============================================================
-
-if not st.session_state.get("vinci_authenticated"):
-
-    try:
-
-        restore_authenticated_session()
-        vinci_sync_user()
-
-    except Exception:
-        pass
-
-
-# ============================================================
-# 8. CHAT AND CONVERSATION HELPERS
-# ============================================================
-
-def vinci_create_new_conversation():
-
-    user_id = vinci_get_user_id()
-
-    if not user_id:
-        return None
-
-    try:
-
-        result = vinci_call(
-            [
-                "create_conversation",
-                "new_conversation"
-            ],
-            {
-                "user_id": user_id,
-                "title": "New conversation"
-            },
-            [user_id, "New conversation"]
+        conversation_id = st.session_state.get(
+            "conversation_id"
         )
 
-        if isinstance(result, dict):
+        if conversation_id and not get_conversation(
+            conversation_id
+        ):
 
-            result = (
-                result.get("id")
-                or result.get("conversation_id")
-            )
+            conversation_id = None
 
-        st.session_state[
-            "vinci_conversation_id"
-        ] = result
+            st.session_state["conversation_id"] = None
 
-        return result
+        if not conversation_id:
 
-    except Exception as e:
+            conversation_id = create_conversation()
 
-        vinci_error(
-            "Unable to create a conversation.",
-            e
+        messages = get_messages(
+            conversation_id,
+            limit=100
         )
-
-        return None
-
-
-def vinci_get_messages():
-
-    conversation_id = st.session_state.get(
-        "vinci_conversation_id"
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not conversation_id or not user_id:
-        return []
-
-    try:
-
-        result = vinci_call(
-            [
-                "read_messages",
-                "get_conversation_messages",
-                "list_messages"
-            ],
-            {
-                "conversation_id": conversation_id,
-                "user_id": user_id
-            },
-            [conversation_id, user_id]
-        )
-
-        return result or []
-
-    except Exception:
-        return []
-
-
-def vinci_save_message(role, content):
-
-    conversation_id = st.session_state.get(
-        "vinci_conversation_id"
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not conversation_id or not user_id:
-        return False
-
-    try:
-
-        vinci_call(
-            [
-                "save_message",
-                "add_message",
-                "store_message"
-            ],
-            {
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": role,
-                "content": content,
-                "message": content
-            },
-            [
-                conversation_id,
-                user_id,
-                role,
-                content
-            ]
-        )
-
-        return True
-
-    except Exception as e:
-
-        vinci_error(
-            "Message could not be saved.",
-            e
-        )
-
-        return False
-
-
-def vinci_chat_page():
-
-    st.title("Chat")
-
-    st.caption(
-        "Your intelligent conversation workspace."
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not user_id:
-
-        st.warning(
-            "Your user session could not be identified. "
-            "Please sign in again."
-        )
-
-        return
-
-    if not st.session_state.get(
-        "vinci_conversation_id"
-    ):
-
-        vinci_create_new_conversation()
-
-    messages = vinci_get_messages()
-
-    for message in messages:
-
-        if isinstance(message, dict):
-
-            role = message.get("role", "assistant")
-            content = message.get(
-                "content",
-                message.get("message", "")
-            )
-
-        else:
-
-            role = getattr(message, "role", "assistant")
-            content = getattr(message, "content", "")
-
-        if role not in ["user", "assistant"]:
-            continue
-
-        with st.chat_message(role):
-
-            st.markdown(str(content))
-
-    prompt = st.chat_input(
-        "Message VINCI AI..."
-    )
-
-    if prompt:
-
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        history = []
 
         for message in messages:
 
-            if isinstance(message, dict):
+            with st.chat_message(message["role"]):
 
-                role = message.get("role")
-                content = message.get("content", "")
+                st.markdown(message["content"])
 
-            else:
-
-                role = getattr(message, "role", None)
-                content = getattr(message, "content", "")
-
-            if role in ["user", "assistant"]:
-
-                history.append({
-                    "role": role,
-                    "content": content
-                })
-
-        vinci_save_message("user", prompt)
-
-        with st.chat_message("assistant"):
-
-            with st.spinner("VINCI is thinking..."):
-
-                try
-# ============================================================
-# VINCI AI — JTEG INTELLIGENCE PLATFORM
-# BLOCK 6 OF 6
-# APPLICATION INTERFACE, DASHBOARD AND WORKSPACES
-# ============================================================
-
-import streamlit as st
-import inspect
-import traceback
-from datetime import datetime, timezone
-
-
-# ============================================================
-# 1. APPLICATION STARTUP
-# ============================================================
-
-@st.cache_resource(show_spinner="Initializing VINCI AI...")
-def vinci_startup():
-
-    initialize_database()
-    initialize_extended_database()
-
-    return True
-
-
-try:
-    vinci_startup()
-
-except Exception as e:
-
-    st.error("VINCI AI could not connect to its database.")
-    st.code(str(e))
-    st.info(
-        "Check your DATABASE_URL and PostgreSQL database "
-        "configuration before continuing."
-    )
-    st.stop()
-
-
-# ============================================================
-# 2. INTERFACE CONFIGURATION
-# ============================================================
-
-st.markdown("""
-<style>
-
-.stApp {
-    background: #080D18;
-    color: #F4F7FF;
-}
-
-section[data-testid="stSidebar"] {
-    background: #101827;
-    border-right: 1px solid #26344A;
-}
-
-section[data-testid="stSidebar"] * {
-    color: #EAF0FF;
-}
-
-.vinci-brand {
-    font-size: 30px;
-    font-weight: 900;
-    letter-spacing: 3px;
-    color: #55B8FF;
-}
-
-.vinci-subtitle {
-    color: #94A8C5;
-    font-size: 12px;
-    letter-spacing: 2px;
-}
-
-.vinci-card {
-    background: linear-gradient(145deg, #17253A, #101827);
-    border: 1px solid #263D5B;
-    border-radius: 16px;
-    padding: 22px;
-    min-height: 145px;
-    margin-bottom: 12px;
-}
-
-.vinci-card h3 {
-    color: #FFFFFF;
-    margin-bottom: 8px;
-}
-
-.vinci-card p {
-    color: #A9B9D1;
-    font-size: 13px;
-}
-
-.vinci-section {
-    color: #65BFFF;
-    font-weight: 800;
-    letter-spacing: 1px;
-}
-
-.vinci-footer {
-    color: #71839F;
-    font-size: 11px;
-    text-align: center;
-    padding: 20px;
-}
-
-div.stButton > button {
-    border-radius: 10px;
-    border: 1px solid #31577C;
-    background: #173451;
-    color: white;
-    font-weight: 600;
-    min-height: 42px;
-}
-
-div.stButton > button:hover {
-    background: #21649A;
-    border-color: #55B8FF;
-    color: white;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-# ============================================================
-# 3. SESSION STATE
-# ============================================================
-
-DEFAULT_STATE = {
-    "vinci_page": "Chat",
-    "vinci_authenticated": False,
-    "vinci_user": None,
-    "vinci_user_id": None,
-    "vinci_user_name": None,
-    "vinci_user_email": None,
-    "vinci_conversation_id": None,
-    "vinci_pending_email": None,
-    "vinci_chat_input": "",
-    "vinci_research_result": None,
-    "vinci_image_result": None,
-    "vinci_voice_text": None,
-}
-
-for key, value in DEFAULT_STATE.items():
-
-    if key not in st.session_state:
-        st.session_state[key] = value
-
-
-# ============================================================
-# 4. GENERAL COMPATIBILITY HELPERS
-# ============================================================
-
-def vinci_find_function(*names):
-
-    for name in names:
-
-        fn = globals().get(name)
-
-        if callable(fn):
-            return fn
-
-    return None
-
-
-def vinci_call(names, values=None, positional=None):
-
-    if isinstance(names, str):
-        names = [names]
-
-    values = values or {}
-    positional = positional or []
-
-    fn = vinci_find_function(*names)
-
-    if fn is None:
-        raise RuntimeError(
-            "Required function not found: " + ", ".join(names)
+        uploaded_image = st.file_uploader(
+            "Attach an image",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="chat_image_upload"
         )
 
-    try:
+        uploaded_document = st.file_uploader(
+            "Attach a document",
+            type=["pdf", "docx", "txt", "csv", "xlsx"],
+            key="chat_document_upload"
+        )
 
-        signature = inspect.signature(fn)
+        if uploaded_document:
 
-        parameters = signature.parameters
+            try:
 
-        if any(
-            p.kind == inspect.Parameter.VAR_KEYWORD
-            for p in parameters.values()
-        ):
-            return fn(**values)
+                extracted = extract_document_text(
+                    uploaded_document.getvalue(),
+                    uploaded_document.name
+                )
 
-        accepted = {
-            key: value
-            for key, value in values.items()
-            if key in parameters
-        }
+                st.session_state["document_context"] = (
+                    extracted
+                )
 
-        required = [
-            p for p in parameters.values()
-            if p.default == inspect.Parameter.empty
-            and p.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD
+                st.session_state[
+                    "chat_uploaded_document_name"
+                ] = uploaded_document.name
+
+                st.success(
+                    f"Document loaded: {uploaded_document.name}"
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+        if uploaded_image:
+
+            st.session_state["chat_image"] = (
+                uploaded_image.getvalue()
             )
-        ]
 
-        missing = [
-            p.name for p in required
-            if p.name not in accepted
-        ]
+            st.session_state["chat_image_mime"] = (
+                uploaded_image.type
+            )
 
-        if missing:
-            return fn(*positional)
+        prompt = st.chat_input(
+            "Ask VINCI anything..."
+        )
 
-        return fn(**accepted)
+        if prompt:
 
-    except (TypeError, ValueError):
+            try:
 
-        return fn(*positional)
+                save_message(
+                    conversation_id,
+                    "user",
+                    prompt
+                )
 
+                if len(messages) == 0:
 
-def vinci_get_user_id():
+                    rename_conversation(
+                        conversation_id,
+                        generate_conversation_title(prompt)
+                    )
 
-    user = st.session_state.get("vinci_user")
+                with st.chat_message("user"):
+                    st.markdown(prompt)
 
-    possible_ids = [
-        st.session_state.get("vinci_user_id"),
-        st.session_state.get("user_id"),
-        st.session_state.get("current_user_id"),
-    ]
+                with st.chat_message("assistant"):
 
-    if isinstance(user, dict):
-        possible_ids.extend([
-            user.get("id"),
-            user.get("user_id"),
-        ])
+                    with st.spinner(
+                        "VINCI is thinking..."
+                    ):
 
-    for value in possible_ids:
+                        image_bytes = st.session_state.get(
+                            "chat_image"
+                        )
 
-        if value:
-            return value
+                        if image_bytes:
 
-    return None
+                            answer = analyze_uploaded_image(
+                                image_bytes,
+                                st.session_state.get(
+                                    "chat_image_mime"
+                                ) or "image/jpeg",
+                                prompt
+                            )
 
+                            result = {
+                                "answer": answer
+                            }
 
-def vinci_get_user_name():
+                        else:
 
-    user = st.session_state.get("vinci_user")
+                            context = st.session_state.get(
+                                "document_context",
+                                ""
+                            )
 
-    possible_names = [
-        st.session_state.get("vinci_user_name"),
-        st.session_state.get("user_name"),
-        st.session_state.get("full_name"),
-    ]
+                            complete_prompt = prompt
 
-    if isinstance(user, dict):
-        possible_names.extend([
-            user.get("full_name"),
-            user.get("name"),
-        ])
+                            if context:
 
-    for value in possible_names:
+                                complete_prompt = (
+                                    "DOCUMENT CONTEXT:\n"
+                                    + context
+                                    + "\n\nUSER QUESTION:\n"
+                                    + prompt
+                                )
 
-        if value:
-            return str(value)
+                            history = get_ai_history(
+                                conversation_id,
+                                limit=20
+                            )
 
-    return "User"
+                            result = generate_ai_response(
+                                prompt=complete_prompt,
+                                history=history[:-1],
+                                workspace="Chat",
+                                user_id=user_id
+                            )
 
+                            answer = result["answer"]
 
-def vinci_get_user_email():
+                        st.markdown(answer)
 
-    user = st.session_state.get("vinci_user")
+                save_message(
+                    conversation_id,
+                    "assistant",
+                    answer
+                )
 
-    possible_emails = [
-        st.session_state.get("vinci_user_email"),
-        st.session_state.get("user_email"),
-        st.session_state.get("email"),
-    ]
+                st.session_state["chat_image"] = None
+                st.session_state["chat_image_mime"] = None
 
-    if isinstance(user, dict):
-        possible_emails.extend([
-            user.get("email"),
-        ])
+                st.rerun()
 
-    for value in possible_emails:
+            except Exception as error:
 
-        if value:
-            return str(value)
+                logger.exception("Chat request failed.")
 
-    return ""
-
-
-def vinci_sync_user():
-
-    user_id = vinci_get_user_id()
-
-    if user_id:
-
-        st.session_state["vinci_user_id"] = user_id
-        st.session_state["vinci_user_name"] = vinci_get_user_name()
-        st.session_state["vinci_user_email"] = vinci_get_user_email()
-        st.session_state["vinci_authenticated"] = True
-
-        return True
-
-    return False
-
-
-def vinci_error(message, error=None):
-
-    st.error(message)
-
-    if error is not None:
-
-        with st.expander("Technical details"):
-            st.code(str(error))
+                st.error(
+                    f"VINCI could not complete your request: {error}"
+                )
 
 
 # ============================================================
-# 5. BRANDING
+# 5. DEEP RESEARCH WORKSPACE
 # ============================================================
 
-def vinci_brand():
+def render_deep_research():
 
-    st.markdown(
-        """
-        <div class="vinci-brand">VINCI AI</div>
-        <div class="vinci-subtitle">
-        JTEG INTELLIGENCE PLATFORM
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-def vinci_footer():
-
-    st.markdown(
-        """
-        <div class="vinci-footer">
-        VINCI AI · POWERED BY JOSIAH TECHNOLOGIES
-        AND ENGINEERING GROUP
-        <br>
-        ENGINEERING INTELLIGENCE FOR THE FUTURE
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-# ============================================================
-# 6. AUTHENTICATION
-# ============================================================
-
-def vinci_authentication_page():
-
-    vinci_brand()
-
-    st.markdown("---")
-
-    st.title("Welcome to VINCI AI")
+    st.title("🔬 Deep Research")
 
     st.write(
-        "Your intelligent workspace for research, "
-        "conversation, creativity and innovation."
+        "Conduct structured AI-assisted research and "
+        "produce professional research reports."
     )
 
-    login_tab, register_tab, verify_tab = st.tabs([
-        "Sign In",
-        "Create Account",
-        "Verify Email"
-    ])
-
-    # --------------------------------------------------------
-    # SIGN IN
-    # --------------------------------------------------------
-
-    with login_tab:
-
-        st.subheader("Sign in to your account")
-
-        with st.form("vinci_login_form"):
-
-            email = st.text_input(
-                "Email address",
-                key="vinci_login_email"
-            )
-
-            password = st.text_input(
-                "Password",
-                type="password",
-                key="vinci_login_password"
-            )
-
-            submit = st.form_submit_button(
-                "Sign In",
-                use_container_width=True
-            )
-
-        if submit:
-
-            if not email or not password:
-
-                st.warning("Enter your email and password.")
-
-            else:
-
-                try:
-
-                    result = authenticate_user(
-                        email.strip().lower(),
-                        password
-                    )
-
-                    if result is False or result is None:
-
-                        st.error(
-                            "Login unsuccessful. Check your "
-                            "credentials and verification status."
-                        )
-
-                    else:
-
-                        vinci_sync_user()
-
-                        if not st.session_state.get(
-                            "vinci_authenticated"
-                        ):
-
-                            restored = restore_authenticated_session()
-
-                            if restored:
-                                vinci_sync_user()
-
-                        if st.session_state.get(
-                            "vinci_authenticated"
-                        ):
-
-                            st.success("Welcome to VINCI AI.")
-
-                            st.session_state["vinci_page"] = "Chat"
-
-                            st.rerun()
-
-                        else:
-
-                            st.warning(
-                                "Authentication was attempted, "
-                                "but a user session could not be "
-                                "confirmed. Check the authentication "
-                                "function's session-state assignments."
-                            )
-
-                except Exception as e:
-
-                    vinci_error("Unable to sign in.", e)
-
-    # --------------------------------------------------------
-    # REGISTRATION
-    # --------------------------------------------------------
-
-    with register_tab:
-
-        st.subheader("Create your VINCI AI account")
-
-        with st.form("vinci_registration_form"):
-
-            full_name = st.text_input("Full name")
-
-            email = st.text_input("Email address")
-
-            phone = st.text_input("Phone number")
-
-            job_description = st.text_input(
-                "Occupation / Job description"
-            )
-
-            password = st.text_input(
-                "Create password",
-                type="password"
-            )
-
-            confirm_password = st.text_input(
-                "Confirm password",
-                type="password"
-            )
-
-            submit_registration = st.form_submit_button(
-                "Create Account",
-                use_container_width=True
-            )
-
-        if submit_registration:
-
-            if not all([
-                full_name,
-                email,
-                phone,
-                job_description,
-                password,
-                confirm_password
-            ]):
-
-                st.warning("Complete all registration fields.")
-
-            elif password != confirm_password:
-
-                st.error("Your passwords do not match.")
-
-            else:
-
-                try:
-
-                    result = register_user(
-                        full_name.strip(),
-                        email.strip().lower(),
-                        phone.strip(),
-                        job_description.strip(),
-                        password
-                    )
-
-                    if result:
-
-                        st.session_state[
-                            "vinci_pending_email"
-                        ] = email.strip().lower()
-
-                        st.success(
-                            "Registration submitted. Check your "
-                            "email for your verification code."
-                        )
-
-                    else:
-
-                        st.error(
-                            "Registration could not be completed. "
-                            "Check the information and try again."
-                        )
-
-                except Exception as e:
-
-                    vinci_error(
-                        "Registration failed.",
-                        e
-                    )
-
-    # --------------------------------------------------------
-    # EMAIL VERIFICATION
-    # --------------------------------------------------------
-
-    with verify_tab:
-
-        st.subheader("Verify your email address")
-
-        pending_email = st.session_state.get(
-            "vinci_pending_email",
-            ""
-        )
-
-        verify_email = st.text_input(
-            "Registered email",
-            value=pending_email,
-            key="vinci_verify_email"
-        )
-
-        verification_code = st.text_input(
-            "Verification code",
-            max_chars=6,
-            key="vinci_verification_code"
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-
-            if st.button(
-                "Verify Account",
-                use_container_width=True
-            ):
-
-                if not verify_email or not verification_code:
-
-                    st.warning(
-                        "Enter your email and verification code."
-                    )
-
-                else:
-
-                    try:
-
-                        result = verify_registration_code(
-                            verify_email.strip().lower(),
-                            verification_code.strip()
-                        )
-
-                        if result:
-
-                            st.success(
-                                "Your email has been verified. "
-                                "You can now sign in."
-                            )
-
-                        else:
-
-                            st.error(
-                                "Verification failed. "
-                                "Check your code or request another."
-                            )
-
-                    except Exception as e:
-
-                        vinci_error(
-                            "Verification failed.",
-                            e
-                        )
-
-        with col2:
-
-            if st.button(
-                "Resend Code",
-                use_container_width=True
-            ):
-
-                if not verify_email:
-
-                    st.warning("Enter your registered email.")
-
-                else:
-
-                    try:
-
-                        result = resend_verification_code(
-                            verify_email.strip().lower()
-                        )
-
-                        if result:
-
-                            st.success(
-                                "A new verification code has "
-                                "been requested."
-                            )
-
-                        else:
-
-                            st.error(
-                                "Unable to resend the verification code."
-                            )
-
-                    except Exception as e:
-
-                        vinci_error(
-                            "Unable to resend verification code.",
-                            e
-                        )
-
-    vinci_footer()
-
-
-# ============================================================
-# 7. SESSION RESTORATION
-# ============================================================
-
-if not st.session_state.get("vinci_authenticated"):
-
-    try:
-
-        restore_authenticated_session()
-        vinci_sync_user()
-
-    except Exception:
-        pass
-
-
-# ============================================================
-# 8. CHAT AND CONVERSATION HELPERS
-# ============================================================
-
-def vinci_create_new_conversation():
-
-    user_id = vinci_get_user_id()
-
-    if not user_id:
-        return None
-
-    try:
-
-        result = vinci_call(
-            [
-                "create_conversation",
-                "new_conversation"
-            ],
-            {
-                "user_id": user_id,
-                "title": "New conversation"
-            },
-            [user_id, "New conversation"]
-        )
-
-        if isinstance(result, dict):
-
-            result = (
-                result.get("id")
-                or result.get("conversation_id")
-            )
-
-        st.session_state[
-            "vinci_conversation_id"
-        ] = result
-
-        return result
-
-    except Exception as e:
-
-        vinci_error(
-            "Unable to create a conversation.",
-            e
-        )
-
-        return None
-
-
-def vinci_get_messages():
-
-    conversation_id = st.session_state.get(
-        "vinci_conversation_id"
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not conversation_id or not user_id:
-        return []
-
-    try:
-
-        result = vinci_call(
-            [
-                "read_messages",
-                "get_conversation_messages",
-                "list_messages"
-            ],
-            {
-                "conversation_id": conversation_id,
-                "user_id": user_id
-            },
-            [conversation_id, user_id]
-        )
-
-        return result or []
-
-    except Exception:
-        return []
-
-
-def vinci_save_message(role, content):
-
-    conversation_id = st.session_state.get(
-        "vinci_conversation_id"
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not conversation_id or not user_id:
-        return False
-
-    try:
-
-        vinci_call(
-            [
-                "save_message",
-                "add_message",
-                "store_message"
-            ],
-            {
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "role": role,
-                "content": content,
-                "message": content
-            },
-            [
-                conversation_id,
-                user_id,
-                role,
-                content
-            ]
-        )
-
-        return True
-
-    except Exception as e:
-
-        vinci_error(
-            "Message could not be saved.",
-            e
-        )
-
-        return False
-
-
-def vinci_chat_page():
-
-    st.title("Chat")
-
-    st.caption(
-        "Your intelligent conversation workspace."
-    )
-
-    user_id = vinci_get_user_id()
-
-    if not user_id:
-
-        st.warning(
-            "Your user session could not be identified. "
-            "Please sign in again."
-        )
-
-        return
-
-    if not st.session_state.get(
-        "vinci_conversation_id"
-    ):
-
-        vinci_create_new_conversation()
-
-    messages = vinci_get_messages()
-
-    for message in messages:
-
-        if isinstance(message, dict):
-
-            role = message.get("role", "assistant")
-            content = message.get(
-                "content",
-                message.get("message", "")
-            )
-
-        else:
-
-            role = getattr(message, "role", "assistant")
-            content = getattr(message, "content", "")
-
-        if role not in ["user", "assistant"]:
-            continue
-
-        with st.chat_message(role):
-
-            st.markdown(str(content))
-
-    prompt = st.chat_input(
-        "Message VINCI AI..."
-    )
-
-    if prompt:
-
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        history = []
-
-        for message in messages:
-
-            if isinstance(message, dict):
-
-                role = message.get("role")
-                content = message.get("content", "")
-
-            else:
-
-                role = getattr(message, "role", None)
-                content = getattr(message, "content", "")
-
-            if role in ["user", "assistant"]:
-
-                history.append({
-                    "role": role,
-                    "content": content
-                })
-
-        vinci_save_message("user", prompt)
-
-        with st.chat_message("assistant"):
-
-            with st.spinner("VINCI is thinking..."):
-
-                try:
-
-                    response = generate_chat_answer(
-                        prompt,
-                        history
-                    )
-
-                    if isinstance(response, dict):
-
-                        response = (
-                            response.get("text")
-                            or response.get("response")
-                            or response.get("content")
-                            or str(response)
-                        )
-
-                    response = str(response)
-
-                    st.markdown(response)
-
-                    vinci_save_message(
-                        "assistant",
-                        response
-                    )
-
-                except Exception as e:
-
-                    vinci_error(
-                        "VINCI could not generate a response.",
-                        e
-                    )
-
-
-# ============================================================
-# 9. DEEP RESEARCH WORKSPACE
-# ============================================================
-
-def vinci_research_page():
-
-    st.title("Deep Research")
-
-    st.caption(
-        "Explore topics and generate structured research reports."
-    )
-
-    research_topic = st.text_area(
+    question = st.text_area(
         "What would you like VINCI to research?",
-        height=130,
-        placeholder="Enter your research topic..."
+        height=130
+    )
+
+    sources = st.text_area(
+        "Optional source material or notes",
+        height=160
     )
 
     if st.button(
@@ -5670,1126 +3881,312 @@ def vinci_research_page():
         use_container_width=True
     ):
 
-        if not research_topic.strip():
-
-            st.warning("Enter a research topic.")
-
-        else:
+        try:
 
             with st.spinner(
-                "VINCI is researching your topic..."
+                "VINCI is analyzing your research question..."
             ):
 
-                try:
+                result = run_deep_research(
+                    question,
+                    sources,
+                    require_user_id()
+                )
 
-                    result = conduct_deep_research(
-                        research_topic.strip()
-                    )
+            st.session_state["research_result"] = result
 
-                    st.session_state[
-                        "vinci_research_result"
-                    ] = result
+        except Exception as error:
 
-                except Exception as e:
+            logger.exception("Research failed.")
 
-                    vinci_error(
-                        "Deep Research encountered an error.",
-                        e
-                    )
+            st.error(str(error))
 
     result = st.session_state.get(
-        "vinci_research_result"
+        "research_result"
     )
 
     if result:
 
-        st.markdown("---")
-
-        if isinstance(result, dict):
-
-            report = (
-                result.get("report")
-                or result.get("text")
-                or result.get("response")
-                or ""
-            )
-
-            sources = result.get("sources", [])
-
-        else:
-
-            report = str(result)
-            sources = []
+        st.divider()
 
         st.subheader("Research Report")
 
-        st.markdown(report)
+        st.markdown(result["answer"])
 
-        if sources:
-
-            st.subheader("Research Sources")
-
-            for index, source in enumerate(sources, 1):
-
-                if isinstance(source, dict):
-
-                    title = source.get(
-                        "title",
-                        f"Source {index}"
-                    )
-
-                    url = source.get("url", "")
-
-                    snippet = source.get("snippet", "")
-
-                    st.markdown(f"**{index}. {title}**")
-
-                    if url:
-                        st.markdown(f"[Open source]({url})")
-
-                    if snippet:
-                        st.caption(snippet)
-
-                else:
-
-                    st.write(source)
+        st.caption(
+            f"Provider: {result['provider']} | "
+            f"Model: {result['model']}"
+        )
 
         if st.button("Save Research Report"):
 
+            save_item(
+                "Deep Research Report",
+                result["answer"],
+                "research"
+            )
+
+            st.success("Report saved.")
+
+
+# ============================================================
+# 6. IMAGE STUDIO
+# ============================================================
+
+def render_image_studio():
+
+    st.title("🎨 Image Studio")
+
+    mode = st.radio(
+        "Choose an operation",
+        [
+            "Generate Image",
+            "Analyze Image"
+        ],
+        horizontal=True
+    )
+
+    if mode == "Generate Image":
+
+        prompt = st.text_area(
+            "Describe the image you want to create",
+            height=140
+        )
+
+        st.info(
+            "Image generation requires an approved free "
+            "OpenRouter image model in your private secrets."
+        )
+
+        if st.button(
+            "Generate Image",
+            use_container_width=True
+        ):
+
             try:
 
-                vinci_call(
-                    [
-                        "save_research_report",
-                        "save_research"
-                    ],
-                    {
-                        "user_id": vinci_get_user_id(),
-                        "report": report,
-                        "content": report,
-                        "title": research_topic[:100]
-                    },
-                    [
-                        vinci_get_user_id(),
-                        report
-                    ]
-                )
+                with st.spinner("Creating image..."):
 
-                st.success("Research report saved.")
+                    result = generate_image(
+                        prompt,
+                        require_user_id()
+                    )
 
-            except Exception as e:
+                st.session_state["image_result"] = result
 
-                vinci_error(
-                    "Unable to save research report.",
-                    e
-                )
+                st.success("Image generated.")
 
+            except Exception as error:
 
-# ============================================================
-# 10. IMAGE STUDIO
-# ============================================================
+                logger.exception("Image generation failed.")
 
-def vinci_image_page():
+                st.error(str(error))
 
-    st.title("Image Studio")
-
-    st.caption(
-        "Create images using VINCI AI."
-    )
-
-    prompt = st.text_area(
-        "Describe the image you want to create",
-        height=140,
-        placeholder=(
-            "Describe the subject, style, environment, "
-            "lighting and composition..."
+        result = st.session_state.get(
+            "image_result"
         )
-    )
 
-    aspect_ratio = st.selectbox(
-        "Image format",
-        [
-            "1:1",
-            "16:9",
-            "9:16",
-            "4:3",
-            "3:4"
-        ]
-    )
+        if result and Path(result["path"]).is_file():
 
-    if st.button(
-        "Generate Image",
-        use_container_width=True
-    ):
+            st.image(
+                result["path"],
+                caption=result["prompt"],
+                use_container_width=True
+            )
 
-        if not prompt.strip():
+    else:
 
-            st.warning("Enter an image description.")
+        image_file = st.file_uploader(
+            "Upload an image for analysis",
+            type=["png", "jpg", "jpeg", "webp"]
+        )
 
-        else:
+        question = st.text_area(
+            "What should VINCI examine?"
+        )
 
-            with st.spinner(
-                "VINCI is creating your image..."
-            ):
+        if st.button(
+            "Analyze Image",
+            use_container_width=True
+        ):
+
+            if not image_file:
+
+                st.warning("Upload an image first.")
+
+            else:
 
                 try:
 
-                    result = generate_vinci_image(
-                        prompt.strip()
-                    )
+                    with st.spinner("Analyzing image..."):
 
-                    st.session_state[
-                        "vinci_image_result"
-                    ] = result
+                        answer = analyze_uploaded_image(
+                            image_file.getvalue(),
+                            image_file.type,
+                            question or "Analyze this image."
+                        )
 
-                except Exception as e:
+                    st.session_state["image_result"] = {
+                        "answer": answer
+                    }
 
-                    vinci_error(
-                        "Image generation failed.",
-                        e
-                    )
+                except Exception as error:
 
-    result = st.session_state.get(
-        "vinci_image_result"
-    )
+                    st.error(str(error))
 
-    if result:
+        result = st.session_state.get(
+            "image_result"
+        )
 
-        st.markdown("---")
+        if result and result.get("answer"):
 
-        image_path = None
-
-        if isinstance(result, dict):
-
-            image_path = (
-                result.get("path")
-                or result.get("image_path")
-                or result.get("file_path")
-            )
-
-            if not image_path:
-                image_path = result.get("image")
-
-        elif isinstance(result, str):
-
-            image_path = result
-
-        if image_path:
-
-            try:
-
-                st.image(
-                    image_path,
-                    caption="Created with VINCI AI",
-                    use_container_width=True
-                )
-
-            except Exception as e:
-
-                st.warning(
-                    "The image was generated, but could not "
-                    "be displayed from the returned location."
-                )
-
-                st.caption(str(e))
-
-        else:
-
-            st.info(
-                "Image generation returned a result, "
-                "but no displayable image path was identified."
-            )
+            st.markdown(result["answer"])
 
 
 # ============================================================
-# 11. DESIGN STUDIO
+# 7. LIVE WITH VINCI
 # ============================================================
 
-def vinci_design_page():
+def render_live_with_vinci():
 
-    st.title("Design Studio")
+    st.title("🎙️ Live with VINCI")
 
-    st.caption(
-        "Create professional design concepts and visual briefs."
+    st.write(
+        "Upload an audio recording for transcription "
+        "and AI-assisted analysis."
     )
 
-    design_type = st.selectbox(
-        "Choose a design category",
-        [
-            "Business Advertisement",
-            "Corporate Flyer",
-            "Product Advertisement",
-            "Logo Concept",
-            "Engineering Diagram",
-            "Architecture Concept",
-            "Social Media Design",
-            "Presentation Visual",
-            "Other"
+    audio_file = st.file_uploader(
+        "Upload audio",
+        type=[
+            "wav", "mp3", "mpeg",
+            "mp4", "aac", "ogg",
+            "webm", "flac"
         ]
     )
 
-    design_description = st.text_area(
-        "Describe your design",
-        height=150,
-        placeholder=(
-            "Explain what you want designed. "
-            "Include the text, colors, layout and visual direction."
+    if audio_file:
+
+        st.audio(
+            audio_file.getvalue(),
+            format=audio_file.type
         )
-    )
 
     if st.button(
-        "Create Design",
+        "Transcribe Audio",
         use_container_width=True
     ):
 
-        if not design_description.strip():
+        if not audio_file:
+
+            st.warning("Upload an audio recording first.")
+
+        else:
+
+            try:
+
+                with st.spinner("Transcribing audio..."):
+
+                    transcription = transcribe_audio(
+                        audio_file.getvalue(),
+                        audio_file.type
+                    )
+
+                st.session_state["voice_result"] = (
+                    transcription
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+    transcription = st.session_state.get(
+        "voice_result"
+    )
+
+    if transcription:
+
+        st.subheader("Transcription")
+
+        st.text_area(
+            "Recognized speech",
+            value=transcription,
+            height=200
+        )
+
+        if st.button("Save Transcription"):
+
+            save_item(
+                "Audio Transcription",
+                transcription,
+                "voice"
+            )
+
+            st.success("Transcription saved.")
+
+    st.info(
+        "This version supports audio upload and transcription. "
+        "Continuous live microphone conversations and "
+        "speech generation require a separate real-time "
+        "voice service integration."
+    )
+
+
+# ============================================================
+# 8. DESIGN STUDIO
+# ============================================================
+
+def render_design_studio():
+
+    st.title("🖌️ Design Studio")
+
+    st.write(
+        "Develop creative concepts, product designs, "
+        "technical descriptions and professional layouts."
+    )
+
+    design_type = st.selectbox(
+        "Design category",
+        [
+            "Product Design",
+            "Engineering Concept",
+            "Business Branding",
+            "Advertisement Concept",
+            "Building and Architecture",
+            "UI/UX Design",
+            "Technical Illustration"
+        ]
+    )
+
+    brief = st.text_area(
+        "Describe your design project",
+        height=160
+    )
+
+    if st.button(
+        "Develop Design Concept",
+        use_container_width=True
+    ):
+
+        if not brief.strip():
 
             st.warning("Describe your design first.")
 
         else:
 
-            design_prompt = f"""
-Create a professional {design_type}.
-
-Design requirements:
-{design_description}
-
-Quality requirements:
-- Professional visual composition
-- Clear typography
-- Balanced layout
-- Appropriate colors
-- High visual quality
-- Accurate representation of the requested subject
-"""
-
-            with st.spinner(
-                "VINCI is preparing your design..."
-            ):
-
-                try:
-
-                    result = generate_vinci_image(
-                        design_prompt
-                    )
-
-                    st.session_state[
-                        "vinci_image_result"
-                    ] = result
-
-                    st.success(
-                        "Your design generation request has completed."
-                    )
-
-                    st.rerun()
-
-                except Exception as e:
-
-                    vinci_error(
-                        "Design generation failed.",
-                        e
-                    )
-
-
-# ============================================================
-# 12. LIVE WITH VINCI
-# ============================================================
-
-def vinci_live_page():
-
-    st.title("Live with VINCI")
-
-    st.caption(
-        "Speak to VINCI using audio input."
-    )
-
-    audio_file = st.audio_input(
-        "Record your message"
-    )
-
-    if audio_file:
-
-        if st.button(
-            "Process Voice Message",
-            use_container_width=True
-        ):
-
-            with st.spinner(
-                "VINCI is processing your voice..."
-            ):
-
-                try:
-
-                    audio_bytes = audio_file.getvalue()
-
-                    transcript = transcribe_audio(
-                        audio_bytes
-                    )
-
-                    if isinstance(transcript, dict):
-
-                        transcript = (
-                            transcript.get("text")
-                            or transcript.get("transcript")
-                            or str(transcript)
-                        )
-
-                    transcript = str(transcript)
-
-                    st.session_state[
-                        "vinci_voice_text"
-                    ] = transcript
-
-                    st.subheader("Transcription")
-
-                    st.write(transcript)
-
-                    response = create_voice_response(
-                        transcript
-                    )
-
-                    if isinstance(response, dict):
-
-                        response_text = (
-                            response.get("text")
-                            or response.get("response")
-                            or ""
-                        )
-
-                        audio_output = (
-                            response.get("audio")
-                            or response.get("audio_bytes")
-                        )
-
-                    else:
-
-                        response_text = str(response)
-                        audio_output = None
-
-                    if response_text:
-
-                        st.subheader("VINCI's Response")
-
-                        st.markdown(response_text)
-
-                    if audio_output:
-
-                        st.audio(
-                            audio_output,
-                            format="audio/mpeg"
-                        )
-
-                except Exception as e:
-
-                    vinci_error(
-                        "Voice processing failed.",
-                        e
-                    )
-
-
-# ============================================================
-# 13. SAVED WORKSPACE
-# ============================================================
-
-def vinci_saved_page():
-
-    st.title("Saved")
-
-    st.caption(
-        "Access your saved information and work."
-    )
-
-    user_id = vinci_get_user_id()
-
-    try:
-
-        items = vinci_call(
-            [
-                "get_saved_items",
-                "list_saved_items",
-                "read_saved_items"
-            ],
-            {
-                "user_id": user_id
-            },
-            [user_id]
-        )
-
-        if not items:
-
-            st.info("You have no saved items yet.")
-
-            return
-
-        for item in items:
-
-            if isinstance(item, dict):
-
-                title = item.get(
-                    "title",
-                    "Saved item"
-                )
-
-                content = item.get(
-                    "content",
-                    item.get("description", "")
-                )
-
-                created = item.get(
-                    "created_at",
-                    ""
-                )
-
-            else:
-
-                title = str(item)
-                content = ""
-                created = ""
-
-            with st.expander(str(title)):
-
-                if content:
-                    st.write(content)
-
-                if created:
-                    st.caption(str(created))
-
-    except Exception as e:
-
-        vinci_error(
-            "Unable to load saved items.",
-            e
-        )
-
-
-# ============================================================
-# 14. LIBRARY WORKSPACE
-# ============================================================
-
-def vinci_library_page():
-
-    st.title("Library")
-
-    st.caption(
-        "Manage your documents and uploaded files."
-    )
-
-    uploaded_file = st.file_uploader(
-        "Upload a document",
-        type=[
-            "pdf",
-            "docx",
-            "txt",
-            "md",
-            "csv",
-            "json",
-            "py",
-            "html"
-        ]
-    )
-
-    if uploaded_file:
-
-        if st.button("Upload to Library"):
-
             try:
 
-                result = vinci_call(
-                    [
-                        "upload_library_file",
-                        "save_library_file",
-                        "add_library_file"
-                    ],
-                    {
-                        "user_id": vinci_get_user_id(),
-                        "uploaded_file": uploaded_file,
-                        "file": uploaded_file,
-                        "filename": uploaded_file.name,
-                        "file_name": uploaded_file.name,
-                        "file_bytes": uploaded_file.getvalue(),
-                        "content": uploaded_file.getvalue()
-                    },
-                    [
-                        vinci_get_user_id(),
-                        uploaded_file
-                    ]
-                )
-
-                if result:
-
-                    st.success(
-                        "Your document has been uploaded."
-                    )
-
-                else:
-
-                    st.warning(
-                        "The upload function did not confirm success."
-                    )
-
-            except Exception as e:
-
-                vinci_error(
-                    "Document upload failed.",
-                    e
-                )
-
-    st.markdown("---")
-
-    st.subheader("Your Documents")
-
-    try:
-
-        files = vinci_call(
-            [
-                "get_library_files",
-                "list_library_files",
-                "read_library_files"
-            ],
-            {
-                "user_id": vinci_get_user_id()
-            },
-            [vinci_get_user_id()]
-        )
-
-        if not files:
-
-            st.info("Your library is currently empty.")
-
-        else:
-
-            for file_item in files:
-
-                if isinstance(file_item, dict):
-
-                    filename = file_item.get(
-                        "filename",
-                        file_item.get("file_name", "Document")
-                    )
-
-                    file_id = file_item.get("id")
-
-                    created = file_item.get(
-                        "created_at",
-                        ""
-                    )
-
-                else:
-
-                    filename = str(file_item)
-                    file_id = None
-                    created = ""
-
-                with st.expander(str(filename)):
-
-                    if created:
-                        st.caption(str(created))
-
-                    if file_id:
-
-                        if st.button(
-                            "Delete " + str(filename),
-                            key=f"delete_library_{file_id}"
-                        ):
-
-                            try:
-
-                                vinci_call(
-                                    [
-                                        "delete_library_file",
-                                        "remove_library_file"
-                                    ],
-                                    {
-                                        "user_id": vinci_get_user_id(),
-                                        "file_id": file_id,
-                                        "id": file_id
-                                    },
-                                    [
-                                        vinci_get_user_id(),
-                                        file_id
-                                    ]
-                                )
-
-                                st.success("Document deleted.")
-                                st.rerun()
-
-                            except Exception as e:
-
-                                vinci_error(
-                                    "Unable to delete document.",
-                                    e
-                                )
-
-    except Exception as e:
-
-        vinci_error(
-            "Unable to retrieve library documents.",
-            e
-        )
-
-
-# ============================================================
-# 15. SCHEDULE WORKSPACE
-# ============================================================
-
-def vinci_schedule_page():
-
-    st.title("Schedule")
-
-    st.caption(
-        "Manage your reminders and scheduled activities."
-    )
-
-    with st.form("vinci_reminder_form"):
-
-        reminder_title = st.text_input(
-            "Reminder title"
-        )
-
-        reminder_description = st.text_area(
-            "Description"
-        )
-
-        reminder_date = st.date_input(
-            "Reminder date"
-        )
-
-        reminder_time = st.time_input(
-            "Reminder time"
-        )
-
-        submit = st.form_submit_button(
-            "Create Reminder",
-            use_container_width=True
-        )
-
-    if submit:
-
-        if not reminder_title.strip():
-
-            st.warning("Enter a reminder title.")
-
-        else:
-
-            try:
-
-                reminder_datetime = datetime.combine(
-                    reminder_date,
-                    reminder_time
-                ).replace(tzinfo=timezone.utc)
-
-                vinci_call(
-                    [
-                        "create_reminder",
-                        "add_reminder",
-                        "save_reminder"
-                    ],
-                    {
-                        "user_id": vinci_get_user_id(),
-                        "title": reminder_title,
-                        "description": reminder_description,
-                        "reminder_time": reminder_datetime,
-                        "scheduled_at": reminder_datetime,
-                        "due_at": reminder_datetime
-                    },
-                    [
-                        vinci_get_user_id(),
-                        reminder_title,
-                        reminder_description,
-                        reminder_datetime
-                    ]
-                )
-
-                st.success("Reminder created.")
-
-            except Exception as e:
-
-                vinci_error(
-                    "Unable to create reminder.",
-                    e
-                )
-
-    st.markdown("---")
-
-    st.subheader("Your Reminders")
-
-    try:
-
-        reminders = vinci_call(
-            [
-                "get_reminders",
-                "list_reminders",
-                "read_reminders"
-            ],
-            {
-                "user_id": vinci_get_user_id()
-            },
-            [vinci_get_user_id()]
-        )
-
-        if not reminders:
-
-            st.info("You have no reminders.")
-
-        else:
-
-            for reminder in reminders:
-
-                if isinstance(reminder, dict):
-
-                    title = reminder.get(
-                        "title",
-                        "Reminder"
-                    )
-
-                    description = reminder.get(
-                        "description",
-                        ""
-                    )
-
-                    reminder_id = reminder.get("id")
-
-                    reminder_time = reminder.get(
-                        "reminder_time",
-                        reminder.get("scheduled_at", "")
-                    )
-
-                else:
-
-                    title = str(reminder)
-                    description = ""
-                    reminder_id = None
-                    reminder_time = ""
-
-                with st.expander(str(title)):
-
-                    if description:
-                        st.write(description)
-
-                    if reminder_time:
-                        st.caption(str(reminder_time))
-
-                    if reminder_id:
-
-                        if st.button(
-                            "Delete Reminder",
-                            key=f"delete_reminder_{reminder_id}"
-                        ):
-
-                            try:
-
-                                vinci_call(
-                                    [
-                                        "delete_reminder",
-                                        "remove_reminder"
-                                    ],
-                                    {
-                                        "user_id": vinci_get_user_id(),
-                                        "reminder_id": reminder_id,
-                                        "id": reminder_id
-                                    },
-                                    [
-                                        vinci_get_user_id(),
-                                        reminder_id
-                                    ]
-                                )
-
-                                st.success("Reminder deleted.")
-                                st.rerun()
-
-                            except Exception as e:
-
-                                vinci_error(
-                                    "Unable to delete reminder.",
-                                    e
-                                )
-
-    except Exception as e:
-
-        vinci_error(
-            "Unable to load reminders.",
-            e
-        )
-
-
-# ============================================================
-# 16. ADMIN WORKSPACE
-# ============================================================
-
-def vinci_admin_page():
-
-    st.title("Administration")
-
-    user_email = vinci_get_user_email()
-
-    try:
-
-        is_admin = current_user_is_admin()
-
-    except Exception:
-
-        is_admin = False
-
-    if not is_admin:
-
-        st.error(
-            "Access denied. Administrator privileges are required."
-        )
-
-        return
-
-    st.success("Administrator access confirmed.")
-
-    st.markdown("---")
-
-    st.subheader("Platform Statistics")
-
-    try:
-
-        stats = vinci_call(
-            [
-                "get_admin_statistics",
-                "get_admin_stats",
-                "admin_dashboard_statistics"
-            ],
-            {},
-            []
-        )
-
-        if isinstance(stats, dict):
-
-            columns = st.columns(3)
-
-            statistic_items = list(stats.items())
-
-            for index, item in enumerate(
-                statistic_items[:3]
-            ):
-
-                key, value = item
-
-                with columns[index]:
-
-                    st.metric(
-                        str(key).replace("_", " ").title(),
-                        value
-                    )
-
-    except Exception as e:
-
-        st.info(
-            "Platform statistics are not available through "
-            "the current admin functions."
-        )
-
-    st.markdown("---")
-
-    st.subheader("User Management")
-
-    try:
-
-        users = vinci_call(
-            [
-                "get_admin_user_records",
-                "list_admin_users",
-                "get_all_users"
-            ],
-            {},
-            []
-        )
-
-        if users:
-
-            st.dataframe(
-                users,
-                use_container_width=True
-            )
-
-        else:
-
-            st.info("No user records were returned.")
-
-    except Exception as e:
-
-        vinci_error(
-            "Unable to retrieve user records.",
-            e
-        )
-
-    st.markdown("---")
-
-    st.subheader("Administration Information")
-
-    st.write("Signed in administrator:", user_email)
-
-    st.caption(
-        "Administrative operations remain subject to "
-        "the authorization checks in the backend."
-    )
-
-
-# ============================================================
-# 17. MAIN APPLICATION DASHBOARD
-# ============================================================
-
-def vinci_dashboard():
-
-    user_name = vinci_get_user_name()
-
-    vinci_brand()
-
-    st.sidebar.markdown("---")
-
-    st.sidebar.markdown(
-        f"### Welcome, {user_name}"
-    )
-
-    st.sidebar.caption(
-        vinci_get_user_email()
-    )
-
-    st.sidebar.markdown("---")
-
-    pages = [
-        "Chat",
-        "Deep Research",
-        "Image Studio",
-        "Live with Vinci",
-        "Design Studio",
-        "Saved",
-        "Library",
-        "Schedule"
-    ]
-
-    try:
-
-        if current_user_is_admin():
-            pages.append("Admin")
-
-    except Exception:
-        pass
-
-    selected_page = st.sidebar.radio(
-        "WORKSPACES",
-        pages,
-        index=(
-            pages.index(st.session_state["vinci_page"])
-            if st.session_state["vinci_page"] in pages
-            else 0
-        ),
-        key="vinci_navigation"
-    )
-
-    st.session_state["vinci_page"] = selected_page
-
-    st.sidebar.markdown("---")
-
-    if st.sidebar.button(
-        "＋ New Chat",
-        use_container_width=True
-    ):
-
-        st.session_state[
-            "vinci_conversation_id"
-        ] = None
-
-        vinci_create_new_conversation()
-
-        st.session_state["vinci_page"] = "Chat"
-
-        st.rerun()
-
-    if st.sidebar.button(
-        "Sign Out",
-        use_container_width=True
-    ):
-
-        try:
-            logout_user()
-
-        except Exception:
-            pass
-
-        for key in [
-            "vinci_authenticated",
-            "vinci_user",
-            "vinci_user_id",
-            "vinci_user_name",
-            "vinci_user_email",
-            "vinci_conversation_id"
-        ]:
-
-            st.session_state[key] = (
-                False if key == "vinci_authenticated" else None
-            )
-
-        st.rerun()
-
-    st.sidebar.markdown("---")
-
-    st.sidebar.caption(
-        "VINCI AI · JTEG"
-    )
-
-    # --------------------------------------------------------
-    # WORKSPACE ROUTING
-    # --------------------------------------------------------
-
-    if selected_page == "Chat":
-
-        vinci_chat_page()
-
-    elif selected_page == "Deep Research":
-
-        vinci_research_page()
-
-    elif selected_page == "Image Studio":
-
-        vinci_image_page()
-
-    elif selected_page == "Live with Vinci":
-
-        vinci_live_page()
-
-    elif selected_page == "Design Studio":
-
-        vinci_design_page()
-
-    elif selected_page == "Saved":
-
-        vinci_saved_page()
-
-    elif selected_page == "Library":
-
-        vinci_library_page()
-
-    elif selected_page == "Schedule":
-
-        vinci_schedule_page()
-
-    elif selected_page == "Admin":
-
-        vinci_admin_page()
-
-    vinci_footer()
-
-
-# ============================================================
-# 18. MAIN APPLICATION ENTRY POINT
-# ============================================================
-
-if st.session_state.get("vinci_authenticated"):
-
-    if not vinci_sync_user():
-
-        st.session_state["vinci_authenticated"] = False
-
-        vinci_authentication_page()
-
-    else:
-
-        vinci_dashboard()
-
-else:
-
-    vinci_authentication_page()
+                prompt = f"""
+Develop a professional design concept.
+
+CATEGORY:
+{design_type}
+
+PROJECT BRIEF:
+{brief}
+
+Provide:
+1. Concept overview
+2. Design objectives
+3. Layout and structure
+4. M
