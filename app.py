@@ -4728,4 +4728,2067 @@ def vinci_chat_page():
 
             with st.spinner("VINCI is thinking..."):
 
-                try
+                try# ============================================================
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 6 OF 6
+# APPLICATION INTERFACE, DASHBOARD AND WORKSPACES
+# ============================================================
+
+import streamlit as st
+import inspect
+import traceback
+from datetime import datetime, timezone
+
+
+# ============================================================
+# 1. APPLICATION STARTUP
+# ============================================================
+
+@st.cache_resource(show_spinner="Initializing VINCI AI...")
+def vinci_startup():
+
+    initialize_database()
+    initialize_extended_database()
+
+    return True
+
+
+try:
+    vinci_startup()
+
+except Exception as e:
+
+    st.error("VINCI AI could not connect to its database.")
+    st.code(str(e))
+    st.info(
+        "Check your DATABASE_URL and PostgreSQL database "
+        "configuration before continuing."
+    )
+    st.stop()
+
+
+# ============================================================
+# 2. INTERFACE CONFIGURATION
+# ============================================================
+
+st.markdown("""
+<style>
+
+.stApp {
+    background: #080D18;
+    color: #F4F7FF;
+}
+
+section[data-testid="stSidebar"] {
+    background: #101827;
+    border-right: 1px solid #26344A;
+}
+
+section[data-testid="stSidebar"] * {
+    color: #EAF0FF;
+}
+
+.vinci-brand {
+    font-size: 30px;
+    font-weight: 900;
+    letter-spacing: 3px;
+    color: #55B8FF;
+}
+
+.vinci-subtitle {
+    color: #94A8C5;
+    font-size: 12px;
+    letter-spacing: 2px;
+}
+
+.vinci-card {
+    background: linear-gradient(145deg, #17253A, #101827);
+    border: 1px solid #263D5B;
+    border-radius: 16px;
+    padding: 22px;
+    min-height: 145px;
+    margin-bottom: 12px;
+}
+
+.vinci-card h3 {
+    color: #FFFFFF;
+    margin-bottom: 8px;
+}
+
+.vinci-card p {
+    color: #A9B9D1;
+    font-size: 13px;
+}
+
+.vinci-section {
+    color: #65BFFF;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
+.vinci-footer {
+    color: #71839F;
+    font-size: 11px;
+    text-align: center;
+    padding: 20px;
+}
+
+div.stButton > button {
+    border-radius: 10px;
+    border: 1px solid #31577C;
+    background: #173451;
+    color: white;
+    font-weight: 600;
+    min-height: 42px;
+}
+
+div.stButton > button:hover {
+    background: #21649A;
+    border-color: #55B8FF;
+    color: white;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================
+# 3. SESSION STATE
+# ============================================================
+
+DEFAULT_STATE = {
+    "vinci_page": "Chat",
+    "vinci_authenticated": False,
+    "vinci_user": None,
+    "vinci_user_id": None,
+    "vinci_user_name": None,
+    "vinci_user_email": None,
+    "vinci_conversation_id": None,
+    "vinci_pending_email": None,
+    "vinci_chat_input": "",
+    "vinci_research_result": None,
+    "vinci_image_result": None,
+    "vinci_voice_text": None,
+}
+
+for key, value in DEFAULT_STATE.items():
+
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# ============================================================
+# 4. GENERAL COMPATIBILITY HELPERS
+# ============================================================
+
+def vinci_find_function(*names):
+
+    for name in names:
+
+        fn = globals().get(name)
+
+        if callable(fn):
+            return fn
+
+    return None
+
+
+def vinci_call(names, values=None, positional=None):
+
+    if isinstance(names, str):
+        names = [names]
+
+    values = values or {}
+    positional = positional or []
+
+    fn = vinci_find_function(*names)
+
+    if fn is None:
+        raise RuntimeError(
+            "Required function not found: " + ", ".join(names)
+        )
+
+    try:
+
+        signature = inspect.signature(fn)
+
+        parameters = signature.parameters
+
+        if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in parameters.values()
+        ):
+            return fn(**values)
+
+        accepted = {
+            key: value
+            for key, value in values.items()
+            if key in parameters
+        }
+
+        required = [
+            p for p in parameters.values()
+            if p.default == inspect.Parameter.empty
+            and p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+        ]
+
+        missing = [
+            p.name for p in required
+            if p.name not in accepted
+        ]
+
+        if missing:
+            return fn(*positional)
+
+        return fn(**accepted)
+
+    except (TypeError, ValueError):
+
+        return fn(*positional)
+
+
+def vinci_get_user_id():
+
+    user = st.session_state.get("vinci_user")
+
+    possible_ids = [
+        st.session_state.get("vinci_user_id"),
+        st.session_state.get("user_id"),
+        st.session_state.get("current_user_id"),
+    ]
+
+    if isinstance(user, dict):
+        possible_ids.extend([
+            user.get("id"),
+            user.get("user_id"),
+        ])
+
+    for value in possible_ids:
+
+        if value:
+            return value
+
+    return None
+
+
+def vinci_get_user_name():
+
+    user = st.session_state.get("vinci_user")
+
+    possible_names = [
+        st.session_state.get("vinci_user_name"),
+        st.session_state.get("user_name"),
+        st.session_state.get("full_name"),
+    ]
+
+    if isinstance(user, dict):
+        possible_names.extend([
+            user.get("full_name"),
+            user.get("name"),
+        ])
+
+    for value in possible_names:
+
+        if value:
+            return str(value)
+
+    return "User"
+
+
+def vinci_get_user_email():
+
+    user = st.session_state.get("vinci_user")
+
+    possible_emails = [
+        st.session_state.get("vinci_user_email"),
+        st.session_state.get("user_email"),
+        st.session_state.get("email"),
+    ]
+
+    if isinstance(user, dict):
+        possible_emails.extend([
+            user.get("email"),
+        ])
+
+    for value in possible_emails:
+
+        if value:
+            return str(value)
+
+    return ""
+
+
+def vinci_sync_user():
+
+    user_id = vinci_get_user_id()
+
+    if user_id:
+
+        st.session_state["vinci_user_id"] = user_id
+        st.session_state["vinci_user_name"] = vinci_get_user_name()
+        st.session_state["vinci_user_email"] = vinci_get_user_email()
+        st.session_state["vinci_authenticated"] = True
+
+        return True
+
+    return False
+
+
+def vinci_error(message, error=None):
+
+    st.error(message)
+
+    if error is not None:
+
+        with st.expander("Technical details"):
+            st.code(str(error))
+
+
+# ============================================================
+# 5. BRANDING
+# ============================================================
+
+def vinci_brand():
+
+    st.markdown(
+        """
+        <div class="vinci-brand">VINCI AI</div>
+        <div class="vinci-subtitle">
+        JTEG INTELLIGENCE PLATFORM
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def vinci_footer():
+
+    st.markdown(
+        """
+        <div class="vinci-footer">
+        VINCI AI · POWERED BY JOSIAH TECHNOLOGIES
+        AND ENGINEERING GROUP
+        <br>
+        ENGINEERING INTELLIGENCE FOR THE FUTURE
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# ============================================================
+# 6. AUTHENTICATION
+# ============================================================
+
+def vinci_authentication_page():
+
+    vinci_brand()
+
+    st.markdown("---")
+
+    st.title("Welcome to VINCI AI")
+
+    st.write(
+        "Your intelligent workspace for research, "
+        "conversation, creativity and innovation."
+    )
+
+    login_tab, register_tab, verify_tab = st.tabs([
+        "Sign In",
+        "Create Account",
+        "Verify Email"
+    ])
+
+    # --------------------------------------------------------
+    # SIGN IN
+    # --------------------------------------------------------
+
+    with login_tab:
+
+        st.subheader("Sign in to your account")
+
+        with st.form("vinci_login_form"):
+
+            email = st.text_input(
+                "Email address",
+                key="vinci_login_email"
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password",
+                key="vinci_login_password"
+            )
+
+            submit = st.form_submit_button(
+                "Sign In",
+                use_container_width=True
+            )
+
+        if submit:
+
+            if not email or not password:
+
+                st.warning("Enter your email and password.")
+
+            else:
+
+                try:
+
+                    result = authenticate_user(
+                        email.strip().lower(),
+                        password
+                    )
+
+                    if result is False or result is None:
+
+                        st.error(
+                            "Login unsuccessful. Check your "
+                            "credentials and verification status."
+                        )
+
+                    else:
+
+                        vinci_sync_user()
+
+                        if not st.session_state.get(
+                            "vinci_authenticated"
+                        ):
+
+                            restored = restore_authenticated_session()
+
+                            if restored:
+                                vinci_sync_user()
+
+                        if st.session_state.get(
+                            "vinci_authenticated"
+                        ):
+
+                            st.success("Welcome to VINCI AI.")
+
+                            st.session_state["vinci_page"] = "Chat"
+
+                            st.rerun()
+
+                        else:
+
+                            st.warning(
+                                "Authentication was attempted, "
+                                "but a user session could not be "
+                                "confirmed. Check the authentication "
+                                "function's session-state assignments."
+                            )
+
+                except Exception as e:
+
+                    vinci_error("Unable to sign in.", e)
+
+    # --------------------------------------------------------
+    # REGISTRATION
+    # --------------------------------------------------------
+
+    with register_tab:
+
+        st.subheader("Create your VINCI AI account")
+
+        with st.form("vinci_registration_form"):
+
+            full_name = st.text_input("Full name")
+
+            email = st.text_input("Email address")
+
+            phone = st.text_input("Phone number")
+
+            job_description = st.text_input(
+                "Occupation / Job description"
+            )
+
+            password = st.text_input(
+                "Create password",
+                type="password"
+            )
+
+            confirm_password = st.text_input(
+                "Confirm password",
+                type="password"
+            )
+
+            submit_registration = st.form_submit_button(
+                "Create Account",
+                use_container_width=True
+            )
+
+        if submit_registration:
+
+            if not all([
+                full_name,
+                email,
+                phone,
+                job_description,
+                password,
+                confirm_password
+            ]):
+
+                st.warning("Complete all registration fields.")
+
+            elif password != confirm_password:
+
+                st.error("Your passwords do not match.")
+
+            else:
+
+                try:
+
+                    result = register_user(
+                        full_name.strip(),
+                        email.strip().lower(),
+                        phone.strip(),
+                        job_description.strip(),
+                        password
+                    )
+
+                    if result:
+
+                        st.session_state[
+                            "vinci_pending_email"
+                        ] = email.strip().lower()
+
+                        st.success(
+                            "Registration submitted. Check your "
+                            "email for your verification code."
+                        )
+
+                    else:
+
+                        st.error(
+                            "Registration could not be completed. "
+                            "Check the information and try again."
+                        )
+
+                except Exception as e:
+
+                    vinci_error(
+                        "Registration failed.",
+                        e
+                    )
+
+    # --------------------------------------------------------
+    # EMAIL VERIFICATION
+    # --------------------------------------------------------
+
+    with verify_tab:
+
+        st.subheader("Verify your email address")
+
+        pending_email = st.session_state.get(
+            "vinci_pending_email",
+            ""
+        )
+
+        verify_email = st.text_input(
+            "Registered email",
+            value=pending_email,
+            key="vinci_verify_email"
+        )
+
+        verification_code = st.text_input(
+            "Verification code",
+            max_chars=6,
+            key="vinci_verification_code"
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            if st.button(
+                "Verify Account",
+                use_container_width=True
+            ):
+
+                if not verify_email or not verification_code:
+
+                    st.warning(
+                        "Enter your email and verification code."
+                    )
+
+                else:
+
+                    try:
+
+                        result = verify_registration_code(
+                            verify_email.strip().lower(),
+                            verification_code.strip()
+                        )
+
+                        if result:
+
+                            st.success(
+                                "Your email has been verified. "
+                                "You can now sign in."
+                            )
+
+                        else:
+
+                            st.error(
+                                "Verification failed. "
+                                "Check your code or request another."
+                            )
+
+                    except Exception as e:
+
+                        vinci_error(
+                            "Verification failed.",
+                            e
+                        )
+
+        with col2:
+
+            if st.button(
+                "Resend Code",
+                use_container_width=True
+            ):
+
+                if not verify_email:
+
+                    st.warning("Enter your registered email.")
+
+                else:
+
+                    try:
+
+                        result = resend_verification_code(
+                            verify_email.strip().lower()
+                        )
+
+                        if result:
+
+                            st.success(
+                                "A new verification code has "
+                                "been requested."
+                            )
+
+                        else:
+
+                            st.error(
+                                "Unable to resend the verification code."
+                            )
+
+                    except Exception as e:
+
+                        vinci_error(
+                            "Unable to resend verification code.",
+                            e
+                        )
+
+    vinci_footer()
+
+
+# ============================================================
+# 7. SESSION RESTORATION
+# ============================================================
+
+if not st.session_state.get("vinci_authenticated"):
+
+    try:
+
+        restore_authenticated_session()
+        vinci_sync_user()
+
+    except Exception:
+        pass
+
+
+# ============================================================
+# 8. CHAT AND CONVERSATION HELPERS
+# ============================================================
+
+def vinci_create_new_conversation():
+
+    user_id = vinci_get_user_id()
+
+    if not user_id:
+        return None
+
+    try:
+
+        result = vinci_call(
+            [
+                "create_conversation",
+                "new_conversation"
+            ],
+            {
+                "user_id": user_id,
+                "title": "New conversation"
+            },
+            [user_id, "New conversation"]
+        )
+
+        if isinstance(result, dict):
+
+            result = (
+                result.get("id")
+                or result.get("conversation_id")
+            )
+
+        st.session_state[
+            "vinci_conversation_id"
+        ] = result
+
+        return result
+
+    except Exception as e:
+
+        vinci_error(
+            "Unable to create a conversation.",
+            e
+        )
+
+        return None
+
+
+def vinci_get_messages():
+
+    conversation_id = st.session_state.get(
+        "vinci_conversation_id"
+    )
+
+    user_id = vinci_get_user_id()
+
+    if not conversation_id or not user_id:
+        return []
+
+    try:
+
+        result = vinci_call(
+            [
+                "read_messages",
+                "get_conversation_messages",
+                "list_messages"
+            ],
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id
+            },
+            [conversation_id, user_id]
+        )
+
+        return result or []
+
+    except Exception:
+        return []
+
+
+def vinci_save_message(role, content):
+
+    conversation_id = st.session_state.get(
+        "vinci_conversation_id"
+    )
+
+    user_id = vinci_get_user_id()
+
+    if not conversation_id or not user_id:
+        return False
+
+    try:
+
+        vinci_call(
+            [
+                "save_message",
+                "add_message",
+                "store_message"
+            ],
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "role": role,
+                "content": content,
+                "message": content
+            },
+            [
+                conversation_id,
+                user_id,
+                role,
+                content
+            ]
+        )
+
+        return True
+
+    except Exception as e:
+
+        vinci_error(
+            "Message could not be saved.",
+            e
+        )
+
+        return False
+
+
+def vinci_chat_page():
+
+    st.title("Chat")
+
+    st.caption(
+        "Your intelligent conversation workspace."
+    )
+
+    user_id = vinci_get_user_id()
+
+    if not user_id:
+
+        st.warning(
+            "Your user session could not be identified. "
+            "Please sign in again."
+        )
+
+        return
+
+    if not st.session_state.get(
+        "vinci_conversation_id"
+    ):
+
+        vinci_create_new_conversation()
+
+    messages = vinci_get_messages()
+
+    for message in messages:
+
+        if isinstance(message, dict):
+
+            role = message.get("role", "assistant")
+            content = message.get(
+                "content",
+                message.get("message", "")
+            )
+
+        else:
+
+            role = getattr(message, "role", "assistant")
+            content = getattr(message, "content", "")
+
+        if role not in ["user", "assistant"]:
+            continue
+
+        with st.chat_message(role):
+
+            st.markdown(str(content))
+
+    prompt = st.chat_input(
+        "Message VINCI AI..."
+    )
+
+    if prompt:
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        history = []
+
+        for message in messages:
+
+            if isinstance(message, dict):
+
+                role = message.get("role")
+                content = message.get("content", "")
+
+            else:
+
+                role = getattr(message, "role", None)
+                content = getattr(message, "content", "")
+
+            if role in ["user", "assistant"]:
+
+                history.append({
+                    "role": role,
+                    "content": content
+                })
+
+        vinci_save_message("user", prompt)
+
+        with st.chat_message("assistant"):
+
+            with st.spinner("VINCI is thinking..."):
+
+                try:
+
+                    response = generate_chat_answer(
+                        prompt,
+                        history
+                    )
+
+                    if isinstance(response, dict):
+
+                        response = (
+                            response.get("text")
+                            or response.get("response")
+                            or response.get("content")
+                            or str(response)
+                        )
+
+                    response = str(response)
+
+                    st.markdown(response)
+
+                    vinci_save_message(
+                        "assistant",
+                        response
+                    )
+
+                except Exception as e:
+
+                    vinci_error(
+                        "VINCI could not generate a response.",
+                        e
+                    )
+
+
+# ============================================================
+# 9. DEEP RESEARCH WORKSPACE
+# ============================================================
+
+def vinci_research_page():
+
+    st.title("Deep Research")
+
+    st.caption(
+        "Explore topics and generate structured research reports."
+    )
+
+    research_topic = st.text_area(
+        "What would you like VINCI to research?",
+        height=130,
+        placeholder="Enter your research topic..."
+    )
+
+    if st.button(
+        "Start Deep Research",
+        use_container_width=True
+    ):
+
+        if not research_topic.strip():
+
+            st.warning("Enter a research topic.")
+
+        else:
+
+            with st.spinner(
+                "VINCI is researching your topic..."
+            ):
+
+                try:
+
+                    result = conduct_deep_research(
+                        research_topic.strip()
+                    )
+
+                    st.session_state[
+                        "vinci_research_result"
+                    ] = result
+
+                except Exception as e:
+
+                    vinci_error(
+                        "Deep Research encountered an error.",
+                        e
+                    )
+
+    result = st.session_state.get(
+        "vinci_research_result"
+    )
+
+    if result:
+
+        st.markdown("---")
+
+        if isinstance(result, dict):
+
+            report = (
+                result.get("report")
+                or result.get("text")
+                or result.get("response")
+                or ""
+            )
+
+            sources = result.get("sources", [])
+
+        else:
+
+            report = str(result)
+            sources = []
+
+        st.subheader("Research Report")
+
+        st.markdown(report)
+
+        if sources:
+
+            st.subheader("Research Sources")
+
+            for index, source in enumerate(sources, 1):
+
+                if isinstance(source, dict):
+
+                    title = source.get(
+                        "title",
+                        f"Source {index}"
+                    )
+
+                    url = source.get("url", "")
+
+                    snippet = source.get("snippet", "")
+
+                    st.markdown(f"**{index}. {title}**")
+
+                    if url:
+                        st.markdown(f"[Open source]({url})")
+
+                    if snippet:
+                        st.caption(snippet)
+
+                else:
+
+                    st.write(source)
+
+        if st.button("Save Research Report"):
+
+            try:
+
+                vinci_call(
+                    [
+                        "save_research_report",
+                        "save_research"
+                    ],
+                    {
+                        "user_id": vinci_get_user_id(),
+                        "report": report,
+                        "content": report,
+                        "title": research_topic[:100]
+                    },
+                    [
+                        vinci_get_user_id(),
+                        report
+                    ]
+                )
+
+                st.success("Research report saved.")
+
+            except Exception as e:
+
+                vinci_error(
+                    "Unable to save research report.",
+                    e
+                )
+
+
+# ============================================================
+# 10. IMAGE STUDIO
+# ============================================================
+
+def vinci_image_page():
+
+    st.title("Image Studio")
+
+    st.caption(
+        "Create images using VINCI AI."
+    )
+
+    prompt = st.text_area(
+        "Describe the image you want to create",
+        height=140,
+        placeholder=(
+            "Describe the subject, style, environment, "
+            "lighting and composition..."
+        )
+    )
+
+    aspect_ratio = st.selectbox(
+        "Image format",
+        [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4"
+        ]
+    )
+
+    if st.button(
+        "Generate Image",
+        use_container_width=True
+    ):
+
+        if not prompt.strip():
+
+            st.warning("Enter an image description.")
+
+        else:
+
+            with st.spinner(
+                "VINCI is creating your image..."
+            ):
+
+                try:
+
+                    result = generate_vinci_image(
+                        prompt.strip()
+                    )
+
+                    st.session_state[
+                        "vinci_image_result"
+                    ] = result
+
+                except Exception as e:
+
+                    vinci_error(
+                        "Image generation failed.",
+                        e
+                    )
+
+    result = st.session_state.get(
+        "vinci_image_result"
+    )
+
+    if result:
+
+        st.markdown("---")
+
+        image_path = None
+
+        if isinstance(result, dict):
+
+            image_path = (
+                result.get("path")
+                or result.get("image_path")
+                or result.get("file_path")
+            )
+
+            if not image_path:
+                image_path = result.get("image")
+
+        elif isinstance(result, str):
+
+            image_path = result
+
+        if image_path:
+
+            try:
+
+                st.image(
+                    image_path,
+                    caption="Created with VINCI AI",
+                    use_container_width=True
+                )
+
+            except Exception as e:
+
+                st.warning(
+                    "The image was generated, but could not "
+                    "be displayed from the returned location."
+                )
+
+                st.caption(str(e))
+
+        else:
+
+            st.info(
+                "Image generation returned a result, "
+                "but no displayable image path was identified."
+            )
+
+
+# ============================================================
+# 11. DESIGN STUDIO
+# ============================================================
+
+def vinci_design_page():
+
+    st.title("Design Studio")
+
+    st.caption(
+        "Create professional design concepts and visual briefs."
+    )
+
+    design_type = st.selectbox(
+        "Choose a design category",
+        [
+            "Business Advertisement",
+            "Corporate Flyer",
+            "Product Advertisement",
+            "Logo Concept",
+            "Engineering Diagram",
+            "Architecture Concept",
+            "Social Media Design",
+            "Presentation Visual",
+            "Other"
+        ]
+    )
+
+    design_description = st.text_area(
+        "Describe your design",
+        height=150,
+        placeholder=(
+            "Explain what you want designed. "
+            "Include the text, colors, layout and visual direction."
+        )
+    )
+
+    if st.button(
+        "Create Design",
+        use_container_width=True
+    ):
+
+        if not design_description.strip():
+
+            st.warning("Describe your design first.")
+
+        else:
+
+            design_prompt = f"""
+Create a professional {design_type}.
+
+Design requirements:
+{design_description}
+
+Quality requirements:
+- Professional visual composition
+- Clear typography
+- Balanced layout
+- Appropriate colors
+- High visual quality
+- Accurate representation of the requested subject
+"""
+
+            with st.spinner(
+                "VINCI is preparing your design..."
+            ):
+
+                try:
+
+                    result = generate_vinci_image(
+                        design_prompt
+                    )
+
+                    st.session_state[
+                        "vinci_image_result"
+                    ] = result
+
+                    st.success(
+                        "Your design generation request has completed."
+                    )
+
+                    st.rerun()
+
+                except Exception as e:
+
+                    vinci_error(
+                        "Design generation failed.",
+                        e
+                    )
+
+
+# ============================================================
+# 12. LIVE WITH VINCI
+# ============================================================
+
+def vinci_live_page():
+
+    st.title("Live with VINCI")
+
+    st.caption(
+        "Speak to VINCI using audio input."
+    )
+
+    audio_file = st.audio_input(
+        "Record your message"
+    )
+
+    if audio_file:
+
+        if st.button(
+            "Process Voice Message",
+            use_container_width=True
+        ):
+
+            with st.spinner(
+                "VINCI is processing your voice..."
+            ):
+
+                try:
+
+                    audio_bytes = audio_file.getvalue()
+
+                    transcript = transcribe_audio(
+                        audio_bytes
+                    )
+
+                    if isinstance(transcript, dict):
+
+                        transcript = (
+                            transcript.get("text")
+                            or transcript.get("transcript")
+                            or str(transcript)
+                        )
+
+                    transcript = str(transcript)
+
+                    st.session_state[
+                        "vinci_voice_text"
+                    ] = transcript
+
+                    st.subheader("Transcription")
+
+                    st.write(transcript)
+
+                    response = create_voice_response(
+                        transcript
+                    )
+
+                    if isinstance(response, dict):
+
+                        response_text = (
+                            response.get("text")
+                            or response.get("response")
+                            or ""
+                        )
+
+                        audio_output = (
+                            response.get("audio")
+                            or response.get("audio_bytes")
+                        )
+
+                    else:
+
+                        response_text = str(response)
+                        audio_output = None
+
+                    if response_text:
+
+                        st.subheader("VINCI's Response")
+
+                        st.markdown(response_text)
+
+                    if audio_output:
+
+                        st.audio(
+                            audio_output,
+                            format="audio/mpeg"
+                        )
+
+                except Exception as e:
+
+                    vinci_error(
+                        "Voice processing failed.",
+                        e
+                    )
+
+
+# ============================================================
+# 13. SAVED WORKSPACE
+# ============================================================
+
+def vinci_saved_page():
+
+    st.title("Saved")
+
+    st.caption(
+        "Access your saved information and work."
+    )
+
+    user_id = vinci_get_user_id()
+
+    try:
+
+        items = vinci_call(
+            [
+                "get_saved_items",
+                "list_saved_items",
+                "read_saved_items"
+            ],
+            {
+                "user_id": user_id
+            },
+            [user_id]
+        )
+
+        if not items:
+
+            st.info("You have no saved items yet.")
+
+            return
+
+        for item in items:
+
+            if isinstance(item, dict):
+
+                title = item.get(
+                    "title",
+                    "Saved item"
+                )
+
+                content = item.get(
+                    "content",
+                    item.get("description", "")
+                )
+
+                created = item.get(
+                    "created_at",
+                    ""
+                )
+
+            else:
+
+                title = str(item)
+                content = ""
+                created = ""
+
+            with st.expander(str(title)):
+
+                if content:
+                    st.write(content)
+
+                if created:
+                    st.caption(str(created))
+
+    except Exception as e:
+
+        vinci_error(
+            "Unable to load saved items.",
+            e
+        )
+
+
+# ============================================================
+# 14. LIBRARY WORKSPACE
+# ============================================================
+
+def vinci_library_page():
+
+    st.title("Library")
+
+    st.caption(
+        "Manage your documents and uploaded files."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload a document",
+        type=[
+            "pdf",
+            "docx",
+            "txt",
+            "md",
+            "csv",
+            "json",
+            "py",
+            "html"
+        ]
+    )
+
+    if uploaded_file:
+
+        if st.button("Upload to Library"):
+
+            try:
+
+                result = vinci_call(
+                    [
+                        "upload_library_file",
+                        "save_library_file",
+                        "add_library_file"
+                    ],
+                    {
+                        "user_id": vinci_get_user_id(),
+                        "uploaded_file": uploaded_file,
+                        "file": uploaded_file,
+                        "filename": uploaded_file.name,
+                        "file_name": uploaded_file.name,
+                        "file_bytes": uploaded_file.getvalue(),
+                        "content": uploaded_file.getvalue()
+                    },
+                    [
+                        vinci_get_user_id(),
+                        uploaded_file
+                    ]
+                )
+
+                if result:
+
+                    st.success(
+                        "Your document has been uploaded."
+                    )
+
+                else:
+
+                    st.warning(
+                        "The upload function did not confirm success."
+                    )
+
+            except Exception as e:
+
+                vinci_error(
+                    "Document upload failed.",
+                    e
+                )
+
+    st.markdown("---")
+
+    st.subheader("Your Documents")
+
+    try:
+
+        files = vinci_call(
+            [
+                "get_library_files",
+                "list_library_files",
+                "read_library_files"
+            ],
+            {
+                "user_id": vinci_get_user_id()
+            },
+            [vinci_get_user_id()]
+        )
+
+        if not files:
+
+            st.info("Your library is currently empty.")
+
+        else:
+
+            for file_item in files:
+
+                if isinstance(file_item, dict):
+
+                    filename = file_item.get(
+                        "filename",
+                        file_item.get("file_name", "Document")
+                    )
+
+                    file_id = file_item.get("id")
+
+                    created = file_item.get(
+                        "created_at",
+                        ""
+                    )
+
+                else:
+
+                    filename = str(file_item)
+                    file_id = None
+                    created = ""
+
+                with st.expander(str(filename)):
+
+                    if created:
+                        st.caption(str(created))
+
+                    if file_id:
+
+                        if st.button(
+                            "Delete " + str(filename),
+                            key=f"delete_library_{file_id}"
+                        ):
+
+                            try:
+
+                                vinci_call(
+                                    [
+                                        "delete_library_file",
+                                        "remove_library_file"
+                                    ],
+                                    {
+                                        "user_id": vinci_get_user_id(),
+                                        "file_id": file_id,
+                                        "id": file_id
+                                    },
+                                    [
+                                        vinci_get_user_id(),
+                                        file_id
+                                    ]
+                                )
+
+                                st.success("Document deleted.")
+                                st.rerun()
+
+                            except Exception as e:
+
+                                vinci_error(
+                                    "Unable to delete document.",
+                                    e
+                                )
+
+    except Exception as e:
+
+        vinci_error(
+            "Unable to retrieve library documents.",
+            e
+        )
+
+
+# ============================================================
+# 15. SCHEDULE WORKSPACE
+# ============================================================
+
+def vinci_schedule_page():
+
+    st.title("Schedule")
+
+    st.caption(
+        "Manage your reminders and scheduled activities."
+    )
+
+    with st.form("vinci_reminder_form"):
+
+        reminder_title = st.text_input(
+            "Reminder title"
+        )
+
+        reminder_description = st.text_area(
+            "Description"
+        )
+
+        reminder_date = st.date_input(
+            "Reminder date"
+        )
+
+        reminder_time = st.time_input(
+            "Reminder time"
+        )
+
+        submit = st.form_submit_button(
+            "Create Reminder",
+            use_container_width=True
+        )
+
+    if submit:
+
+        if not reminder_title.strip():
+
+            st.warning("Enter a reminder title.")
+
+        else:
+
+            try:
+
+                reminder_datetime = datetime.combine(
+                    reminder_date,
+                    reminder_time
+                ).replace(tzinfo=timezone.utc)
+
+                vinci_call(
+                    [
+                        "create_reminder",
+                        "add_reminder",
+                        "save_reminder"
+                    ],
+                    {
+                        "user_id": vinci_get_user_id(),
+                        "title": reminder_title,
+                        "description": reminder_description,
+                        "reminder_time": reminder_datetime,
+                        "scheduled_at": reminder_datetime,
+                        "due_at": reminder_datetime
+                    },
+                    [
+                        vinci_get_user_id(),
+                        reminder_title,
+                        reminder_description,
+                        reminder_datetime
+                    ]
+                )
+
+                st.success("Reminder created.")
+
+            except Exception as e:
+
+                vinci_error(
+                    "Unable to create reminder.",
+                    e
+                )
+
+    st.markdown("---")
+
+    st.subheader("Your Reminders")
+
+    try:
+
+        reminders = vinci_call(
+            [
+                "get_reminders",
+                "list_reminders",
+                "read_reminders"
+            ],
+            {
+                "user_id": vinci_get_user_id()
+            },
+            [vinci_get_user_id()]
+        )
+
+        if not reminders:
+
+            st.info("You have no reminders.")
+
+        else:
+
+            for reminder in reminders:
+
+                if isinstance(reminder, dict):
+
+                    title = reminder.get(
+                        "title",
+                        "Reminder"
+                    )
+
+                    description = reminder.get(
+                        "description",
+                        ""
+                    )
+
+                    reminder_id = reminder.get("id")
+
+                    reminder_time = reminder.get(
+                        "reminder_time",
+                        reminder.get("scheduled_at", "")
+                    )
+
+                else:
+
+                    title = str(reminder)
+                    description = ""
+                    reminder_id = None
+                    reminder_time = ""
+
+                with st.expander(str(title)):
+
+                    if description:
+                        st.write(description)
+
+                    if reminder_time:
+                        st.caption(str(reminder_time))
+
+                    if reminder_id:
+
+                        if st.button(
+                            "Delete Reminder",
+                            key=f"delete_reminder_{reminder_id}"
+                        ):
+
+                            try:
+
+                                vinci_call(
+                                    [
+                                        "delete_reminder",
+                                        "remove_reminder"
+                                    ],
+                                    {
+                                        "user_id": vinci_get_user_id(),
+                                        "reminder_id": reminder_id,
+                                        "id": reminder_id
+                                    },
+                                    [
+                                        vinci_get_user_id(),
+                                        reminder_id
+                                    ]
+                                )
+
+                                st.success("Reminder deleted.")
+                                st.rerun()
+
+                            except Exception as e:
+
+                                vinci_error(
+                                    "Unable to delete reminder.",
+                                    e
+                                )
+
+    except Exception as e:
+
+        vinci_error(
+            "Unable to load reminders.",
+            e
+        )
+
+
+# ============================================================
+# 16. ADMIN WORKSPACE
+# ============================================================
+
+def vinci_admin_page():
+
+    st.title("Administration")
+
+    user_email = vinci_get_user_email()
+
+    try:
+
+        is_admin = current_user_is_admin()
+
+    except Exception:
+
+        is_admin = False
+
+    if not is_admin:
+
+        st.error(
+            "Access denied. Administrator privileges are required."
+        )
+
+        return
+
+    st.success("Administrator access confirmed.")
+
+    st.markdown("---")
+
+    st.subheader("Platform Statistics")
+
+    try:
+
+        stats = vinci_call(
+            [
+                "get_admin_statistics",
+                "get_admin_stats",
+                "admin_dashboard_statistics"
+            ],
+            {},
+            []
+        )
+
+        if isinstance(stats, dict):
+
+            columns = st.columns(3)
+
+            statistic_items = list(stats.items())
+
+            for index, item in enumerate(
+                statistic_items[:3]
+            ):
+
+                key, value = item
+
+                with columns[index]:
+
+                    st.metric(
+                        str(key).replace("_", " ").title(),
+                        value
+                    )
+
+    except Exception as e:
+
+        st.info(
+            "Platform statistics are not available through "
+            "the current admin functions."
+        )
+
+    st.markdown("---")
+
+    st.subheader("User Management")
+
+    try:
+
+        users = vinci_call(
+            [
+                "get_admin_user_records",
+                "list_admin_users",
+                "get_all_users"
+            ],
+            {},
+            []
+        )
+
+        if users:
+
+            st.dataframe(
+                users,
+                use_container_width=True
+            )
+
+        else:
+
+            st.info("No user records were returned.")
+
+    except Exception as e:
+
+        vinci_error(
+            "Unable to retrieve user records.",
+            e
+        )
+
+    st.markdown("---")
+
+    st.subheader("Administration Information")
+
+    st.write("Signed in administrator:", user_email)
+
+    st.caption(
+        "Administrative operations remain subject to "
+        "the authorization checks in the backend."
+    )
+
+
+# ============================================================
+# 17. MAIN APPLICATION DASHBOARD
+# ============================================================
+
+def vinci_dashboard():
+
+    user_name = vinci_get_user_name()
+
+    vinci_brand()
+
+    st.sidebar.markdown("---")
+
+    st.sidebar.markdown(
+        f"### Welcome, {user_name}"
+    )
+
+    st.sidebar.caption(
+        vinci_get_user_email()
+    )
+
+    st.sidebar.markdown("---")
+
+    pages = [
+        "Chat",
+        "Deep Research",
+        "Image Studio",
+        "Live with Vinci",
+        "Design Studio",
+        "Saved",
+        "Library",
+        "Schedule"
+    ]
+
+    try:
+
+        if current_user_is_admin():
+            pages.append("Admin")
+
+    except Exception:
+        pass
+
+    selected_page = st.sidebar.radio(
+        "WORKSPACES",
+        pages,
+        index=(
+            pages.index(st.session_state["vinci_page"])
+            if st.session_state["vinci_page"] in pages
+            else 0
+        ),
+        key="vinci_navigation"
+    )
+
+    st.session_state["vinci_page"] = selected_page
+
+    st.sidebar.markdown("---")
+
+    if st.sidebar.button(
+        "＋ New Chat",
+        use_container_width=True
+    ):
+
+        st.session_state[
+            "vinci_conversation_id"
+        ] = None
+
+        vinci_create_new_conversation()
+
+        st.session_state["vinci_page"] = "Chat"
+
+        st.rerun()
+
+    if st.sidebar.button(
+        "Sign Out",
+        use_container_width=True
+    ):
+
+        try:
+            logout_user()
+
+        except Exception:
+            pass
+
+        for key in [
+            "vinci_authenticated",
+            "vinci_user",
+            "vinci_user_id",
+            "vinci_user_name",
+            "vinci_user_email",
+            "vinci_conversation_id"
+        ]:
+
+            st.session_state[key] = (
+                False if key == "vinci_authenticated" else None
+            )
+
+        st.rerun()
+
+    st.sidebar.markdown("---")
+
+    st.sidebar.caption(
+        "VINCI AI · JTEG"
+    )
+
+    # --------------------------------------------------------
+    # WORKSPACE ROUTING
+    # --------------------------------------------------------
+
+    if selected_page == "Chat":
+
+        vinci_chat_page()
+
+    elif selected_page == "Deep Research":
+
+        vinci_research_page()
+
+    elif selected_page == "Image Studio":
+
+        vinci_image_page()
+
+    elif selected_page == "Live with Vinci":
+
+        vinci_live_page()
+
+    elif selected_page == "Design Studio":
+
+        vinci_design_page()
+
+    elif selected_page == "Saved":
+
+        vinci_saved_page()
+
+    elif selected_page == "Library":
+
+        vinci_library_page()
+
+    elif selected_page == "Schedule":
+
+        vinci_schedule_page()
+
+    elif selected_page == "Admin":
+
+        vinci_admin_page()
+
+    vinci_footer()
+
+
+# ============================================================
+# 18. MAIN APPLICATION ENTRY POINT
+# ============================================================
+
+if st.session_state.get("vinci_authenticated"):
+
+    if not vinci_sync_user():
+
+        st.session_state["vinci_authenticated"] = False
+
+        vinci_authentication_page()
+
+    else:
+
+        vinci_dashboard()
+
+else:
+
+    vinci_authentication_page()
