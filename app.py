@@ -3331,3 +3331,1498 @@ def get_generated_images(limit=50):
 # END OF BLOCK 5
 # ============================================================
 
+# ============================================================
+# VINCI AI — JTEG INTELLIGENCE PLATFORM
+# BLOCK 6 OF 6
+# COMPLETE APPLICATION INTERFACE
+# ============================================================
+
+
+# ============================================================
+# 1. UI CONFIGURATION
+# ============================================================
+
+st.markdown("""
+<style>
+    .stApp {
+        background: linear-gradient(
+            135deg,
+            #081526 0%,
+            #101d35 55%,
+            #17233e 100%
+        );
+    }
+
+    h1, h2, h3, p, label {
+        color: #f4f7ff;
+    }
+
+    .vinci-header {
+        padding: 22px;
+        border-radius: 18px;
+        background: linear-gradient(
+            120deg,
+            #123b67,
+            #252a59
+        );
+        border: 1px solid #355b91;
+        margin-bottom: 20px;
+    }
+
+    .vinci-card {
+        padding: 20px;
+        border-radius: 16px;
+        background: rgba(31, 48, 78, 0.88);
+        border: 1px solid #344f75;
+        min-height: 120px;
+        margin-bottom: 12px;
+    }
+
+    .vinci-muted {
+        color: #aab9d2;
+    }
+
+    .stButton button {
+        border-radius: 10px;
+        font-weight: 600;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def vinci_header():
+
+    st.markdown("""
+    <div class="vinci-header">
+        <h1>⚡ VINCI AI</h1>
+        <p>JTEG INTELLIGENCE PLATFORM</p>
+        <p class="vinci-muted">
+            Engineering intelligence. Research.
+            Creativity. Productivity.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def workspace_card(title, description, icon, key):
+
+    st.markdown(
+        f"""
+        <div class="vinci-card">
+            <h3>{icon} {title}</h3>
+            <p class="vinci-muted">{description}</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    if st.button(
+        f"Open {title}",
+        key=f"open_{key}",
+        use_container_width=True
+    ):
+
+        st.session_state["page"] = title
+
+        st.rerun()
+
+
+# ============================================================
+# 2. SESSION RESTORATION
+# ============================================================
+
+if not st.session_state.get("authenticated"):
+
+    try:
+        restore_authenticated_session()
+
+    except Exception:
+        logger.exception("Session restoration failed.")
+
+
+# ============================================================
+# 3. AUTHENTICATION INTERFACE
+# ============================================================
+
+def render_authentication():
+
+    vinci_header()
+
+    login_tab, register_tab, verify_tab = st.tabs([
+        "Sign In",
+        "Create Account",
+        "Verify Email"
+    ])
+
+    with login_tab:
+
+        st.subheader("Welcome back")
+
+        with st.form("vinci_login_form"):
+
+            email = st.text_input(
+                "Email address"
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            submitted = st.form_submit_button(
+                "Sign In",
+                use_container_width=True
+            )
+
+        if submitted:
+
+            try:
+
+                success = authenticate_user(
+                    email,
+                    password
+                )
+
+                if success:
+
+                    st.success("Login successful.")
+
+                    st.session_state["page"] = "Chat"
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Login failed. Check your details, "
+                        "account verification and account status."
+                    )
+
+            except Exception as error:
+
+                logger.exception("Login failed.")
+
+                st.error(str(error))
+
+    with register_tab:
+
+        st.subheader("Create your VINCI account")
+
+        with st.form("vinci_registration_form"):
+
+            full_name = st.text_input("Full name")
+
+            reg_email = st.text_input("Email address")
+
+            phone = st.text_input("Phone number")
+
+            job = st.text_area(
+                "Job description"
+            )
+
+            reg_password = st.text_input(
+                "Password",
+                type="password"
+            )
+
+            confirm_password = st.text_input(
+                "Confirm password",
+                type="password"
+            )
+
+            submitted = st.form_submit_button(
+                "Create Account",
+                use_container_width=True
+            )
+
+        if submitted:
+
+            try:
+
+                if reg_password != confirm_password:
+
+                    raise ValueError(
+                        "Passwords do not match."
+                    )
+
+                register_user(
+                    full_name,
+                    reg_email,
+                    phone,
+                    job,
+                    reg_password
+                )
+
+                st.success(
+                    "Registration successful. "
+                    "Check your email for your verification code."
+                )
+
+                st.session_state["pending_email"] = (
+                    normalize_email(reg_email)
+                )
+
+            except Exception as error:
+
+                logger.exception("Registration failed.")
+
+                st.error(str(error))
+
+    with verify_tab:
+
+        st.subheader("Verify your email")
+
+        verification_email = st.text_input(
+            "Registered email",
+            value=st.session_state.get(
+                "pending_email"
+            ) or "",
+            key="verification_email_input"
+        )
+
+        verification_code = st.text_input(
+            "Six-digit verification code",
+            max_chars=6
+        )
+
+        if st.button(
+            "Verify Account",
+            use_container_width=True
+        ):
+
+            try:
+
+                verified = verify_registration_code(
+                    verification_email,
+                    verification_code
+                )
+
+                if verified:
+
+                    st.success(
+                        "Email verified. You can now sign in."
+                    )
+
+                else:
+
+                    st.error(
+                        "Verification failed. "
+                        "Check the code or request another."
+                    )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+        if st.button(
+            "Resend Verification Code",
+            use_container_width=True
+        ):
+
+            try:
+
+                resend_verification_code(
+                    verification_email
+                )
+
+                st.success(
+                    "A new verification code has been sent."
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+
+# ============================================================
+# 4. CHAT WORKSPACE
+# ============================================================
+
+def render_chat():
+
+    st.title("💬 Chat with VINCI")
+
+    user_id = require_user_id()
+
+    conversations = get_conversations()
+
+    col1, col2 = st.columns([1, 3])
+
+    with col1:
+
+        if st.button(
+            "＋ New Chat",
+            use_container_width=True
+        ):
+
+            create_conversation()
+
+            st.rerun()
+
+        st.subheader("Recent chats")
+
+        for conversation in conversations:
+
+            if st.button(
+                conversation["title"][:35],
+                key=f"conversation_{conversation['id']}",
+                use_container_width=True
+            ):
+
+                st.session_state["conversation_id"] = (
+                    conversation["id"]
+                )
+
+                st.rerun()
+
+    with col2:
+
+        conversation_id = st.session_state.get(
+            "conversation_id"
+        )
+
+        if conversation_id and not get_conversation(
+            conversation_id
+        ):
+
+            conversation_id = None
+
+            st.session_state["conversation_id"] = None
+
+        if not conversation_id:
+
+            conversation_id = create_conversation()
+
+        messages = get_messages(
+            conversation_id,
+            limit=100
+        )
+
+        for message in messages:
+
+            with st.chat_message(message["role"]):
+
+                st.markdown(message["content"])
+
+        uploaded_image = st.file_uploader(
+            "Attach an image",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="chat_image_upload"
+        )
+
+        uploaded_document = st.file_uploader(
+            "Attach a document",
+            type=["pdf", "docx", "txt", "csv", "xlsx"],
+            key="chat_document_upload"
+        )
+
+        if uploaded_document:
+
+            try:
+
+                extracted = extract_document_text(
+                    uploaded_document.getvalue(),
+                    uploaded_document.name
+                )
+
+                st.session_state["document_context"] = (
+                    extracted
+                )
+
+                st.session_state[
+                    "chat_uploaded_document_name"
+                ] = uploaded_document.name
+
+                st.success(
+                    f"Document loaded: {uploaded_document.name}"
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+        if uploaded_image:
+
+            st.session_state["chat_image"] = (
+                uploaded_image.getvalue()
+            )
+
+            st.session_state["chat_image_mime"] = (
+                uploaded_image.type
+            )
+
+        prompt = st.chat_input(
+            "Ask VINCI anything..."
+        )
+
+        if prompt:
+
+            try:
+
+                save_message(
+                    conversation_id,
+                    "user",
+                    prompt
+                )
+
+                if len(messages) == 0:
+
+                    rename_conversation(
+                        conversation_id,
+                        generate_conversation_title(prompt)
+                    )
+
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+
+                    with st.spinner(
+                        "VINCI is thinking..."
+                    ):
+
+                        image_bytes = st.session_state.get(
+                            "chat_image"
+                        )
+
+                        if image_bytes:
+
+                            answer = analyze_uploaded_image(
+                                image_bytes,
+                                st.session_state.get(
+                                    "chat_image_mime"
+                                ) or "image/jpeg",
+                                prompt
+                            )
+
+                            result = {
+                                "answer": answer
+                            }
+
+                        else:
+
+                            context = st.session_state.get(
+                                "document_context",
+                                ""
+                            )
+
+                            complete_prompt = prompt
+
+                            if context:
+
+                                complete_prompt = (
+                                    "DOCUMENT CONTEXT:\n"
+                                    + context
+                                    + "\n\nUSER QUESTION:\n"
+                                    + prompt
+                                )
+
+                            history = get_ai_history(
+                                conversation_id,
+                                limit=20
+                            )
+
+                            result = generate_ai_response(
+                                prompt=complete_prompt,
+                                history=history[:-1],
+                                workspace="Chat",
+                                user_id=user_id
+                            )
+
+                            answer = result["answer"]
+
+                        st.markdown(answer)
+
+                save_message(
+                    conversation_id,
+                    "assistant",
+                    answer
+                )
+
+                st.session_state["chat_image"] = None
+                st.session_state["chat_image_mime"] = None
+
+                st.rerun()
+
+            except Exception as error:
+
+                logger.exception("Chat request failed.")
+
+                st.error(
+                    f"VINCI could not complete your request: {error}"
+                )
+
+
+# ============================================================
+# 5. DEEP RESEARCH WORKSPACE
+# ============================================================
+
+def render_deep_research():
+
+    st.title("🔬 Deep Research")
+
+    st.write(
+        "Conduct structured AI-assisted research and "
+        "produce professional research reports."
+    )
+
+    question = st.text_area(
+        "What would you like VINCI to research?",
+        height=130
+    )
+
+    sources = st.text_area(
+        "Optional source material or notes",
+        height=160
+    )
+
+    if st.button(
+        "Start Deep Research",
+        use_container_width=True
+    ):
+
+        try:
+
+            with st.spinner(
+                "VINCI is analyzing your research question..."
+            ):
+
+                result = run_deep_research(
+                    question,
+                    sources,
+                    require_user_id()
+                )
+
+            st.session_state["research_result"] = result
+
+        except Exception as error:
+
+            logger.exception("Research failed.")
+
+            st.error(str(error))
+
+    result = st.session_state.get(
+        "research_result"
+    )
+
+    if result:
+
+        st.divider()
+
+        st.subheader("Research Report")
+
+        st.markdown(result["answer"])
+
+        st.caption(
+            f"Provider: {result['provider']} | "
+            f"Model: {result['model']}"
+        )
+
+        if st.button("Save Research Report"):
+
+            save_item(
+                "Deep Research Report",
+                result["answer"],
+                "research"
+            )
+
+            st.success("Report saved.")
+
+
+# ============================================================
+# 6. IMAGE STUDIO
+# ============================================================
+
+def render_image_studio():
+
+    st.title("🎨 Image Studio")
+
+    mode = st.radio(
+        "Choose an operation",
+        [
+            "Generate Image",
+            "Analyze Image"
+        ],
+        horizontal=True
+    )
+
+    if mode == "Generate Image":
+
+        prompt = st.text_area(
+            "Describe the image you want to create",
+            height=140
+        )
+
+        st.info(
+            "Image generation requires an approved free "
+            "OpenRouter image model in your private secrets."
+        )
+
+        if st.button(
+            "Generate Image",
+            use_container_width=True
+        ):
+
+            try:
+
+                with st.spinner("Creating image..."):
+
+                    result = generate_image(
+                        prompt,
+                        require_user_id()
+                    )
+
+                st.session_state["image_result"] = result
+
+                st.success("Image generated.")
+
+            except Exception as error:
+
+                logger.exception("Image generation failed.")
+
+                st.error(str(error))
+
+        result = st.session_state.get(
+            "image_result"
+        )
+
+        if result and Path(result["path"]).is_file():
+
+            st.image(
+                result["path"],
+                caption=result["prompt"],
+                use_container_width=True
+            )
+
+    else:
+
+        image_file = st.file_uploader(
+            "Upload an image for analysis",
+            type=["png", "jpg", "jpeg", "webp"]
+        )
+
+        question = st.text_area(
+            "What should VINCI examine?"
+        )
+
+        if st.button(
+            "Analyze Image",
+            use_container_width=True
+        ):
+
+            if not image_file:
+
+                st.warning("Upload an image first.")
+
+            else:
+
+                try:
+
+                    with st.spinner("Analyzing image..."):
+
+                        answer = analyze_uploaded_image(
+                            image_file.getvalue(),
+                            image_file.type,
+                            question or "Analyze this image."
+                        )
+
+                    st.session_state["image_result"] = {
+                        "answer": answer
+                    }
+
+                except Exception as error:
+
+                    st.error(str(error))
+
+        result = st.session_state.get(
+            "image_result"
+        )
+
+        if result and result.get("answer"):
+
+            st.markdown(result["answer"])
+
+
+# ============================================================
+# 7. LIVE WITH VINCI
+# ============================================================
+
+def render_live_with_vinci():
+
+    st.title("🎙️ Live with VINCI")
+
+    st.write(
+        "Upload an audio recording for transcription "
+        "and AI-assisted analysis."
+    )
+
+    audio_file = st.file_uploader(
+        "Upload audio",
+        type=[
+            "wav", "mp3", "mpeg",
+            "mp4", "aac", "ogg",
+            "webm", "flac"
+        ]
+    )
+
+    if audio_file:
+
+        st.audio(
+            audio_file.getvalue(),
+            format=audio_file.type
+        )
+
+    if st.button(
+        "Transcribe Audio",
+        use_container_width=True
+    ):
+
+        if not audio_file:
+
+            st.warning("Upload an audio recording first.")
+
+        else:
+
+            try:
+
+                with st.spinner("Transcribing audio..."):
+
+                    transcription = transcribe_audio(
+                        audio_file.getvalue(),
+                        audio_file.type
+                    )
+
+                st.session_state["voice_result"] = (
+                    transcription
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+    transcription = st.session_state.get(
+        "voice_result"
+    )
+
+    if transcription:
+
+        st.subheader("Transcription")
+
+        st.text_area(
+            "Recognized speech",
+            value=transcription,
+            height=200
+        )
+
+        if st.button("Save Transcription"):
+
+            save_item(
+                "Audio Transcription",
+                transcription,
+                "voice"
+            )
+
+            st.success("Transcription saved.")
+
+    st.info(
+        "This version supports audio upload and transcription. "
+        "Continuous live microphone conversations and "
+        "speech generation require a separate real-time "
+        "voice service integration."
+    )
+
+
+# ============================================================
+# 8. DESIGN STUDIO
+# ============================================================
+
+def render_design_studio():
+
+    st.title("🖌️ Design Studio")
+
+    st.write(
+        "Develop creative concepts, product designs, "
+        "technical descriptions and professional layouts."
+    )
+
+    design_type = st.selectbox(
+        "Design category",
+        [
+            "Product Design",
+            "Engineering Concept",
+            "Business Branding",
+            "Advertisement Concept",
+            "Building and Architecture",
+            "UI/UX Design",
+            "Technical Illustration"
+        ]
+    )
+
+    brief = st.text_area(
+        "Describe your design project",
+        height=160
+    )
+
+    if st.button(
+        "Develop Design Concept",
+        use_container_width=True
+    ):
+
+        if not brief.strip():
+
+            st.warning("Describe your design first.")
+
+        else:
+
+            try:
+
+                prompt = f"""
+Develop a professional design concept.
+
+CATEGORY:
+{design_type}
+
+PROJECT BRIEF:
+{brief}
+
+Provide:
+1. Concept overview
+2. Design objectives
+3. Layout and structure
+4. Materials or visual elements
+5. Functional considerations
+6. Colour and typography recommendations
+7. Production considerations
+8. Final design specification
+
+Be detailed and practical.
+"""
+
+                with st.spinner("Developing concept..."):
+
+                    result = generate_ai_response(
+                        prompt,
+                        workspace="Design Studio",
+                        user_id=require_user_id()
+                    )
+
+                st.session_state["design_result"] = (
+                    result["answer"]
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+    result = st.session_state.get(
+        "design_result"
+    )
+
+    if result:
+
+        st.markdown(result)
+
+        if st.button("Save Design Concept"):
+
+            save_item(
+                design_type,
+                result,
+                "design"
+            )
+
+            st.success("Design concept saved.")
+
+
+# ============================================================
+# 9. SAVED WORKSPACE
+# ============================================================
+
+def render_saved():
+
+    st.title("📚 Saved Items")
+
+    items = get_saved_items()
+
+    if not items:
+
+        st.info("You have not saved anything yet.")
+
+    for item in items:
+
+        with st.expander(
+            item["title"] or "Saved item"
+        ):
+
+            st.caption(item["item_type"])
+
+            st.markdown(item["content"] or "")
+
+            if st.button(
+                "Delete",
+                key=f"delete_saved_{item['id']}"
+            ):
+
+                delete_saved_item(item["id"])
+
+                st.rerun()
+
+
+# ============================================================
+# 10. LIBRARY WORKSPACE
+# ============================================================
+
+def render_library():
+
+    st.title("🗂️ Library")
+
+    uploaded = st.file_uploader(
+        "Upload a document",
+        type=[
+            "pdf", "docx", "txt",
+            "csv", "xlsx", "png",
+            "jpg", "jpeg", "webp"
+        ]
+    )
+
+    if uploaded:
+
+        if st.button("Add to Library"):
+
+            try:
+
+                result = process_library_upload(
+                    uploaded
+                )
+
+                st.success(
+                    f"{result['filename']} added to Library."
+                )
+
+            except Exception as error:
+
+                st.error(str(error))
+
+    st.divider()
+
+    for item in get_library_files():
+
+        with st.expander(item["filename"]):
+
+            st.write(
+                f"File size: {item['file_size']} bytes"
+            )
+
+            st.write(
+                f"Type: {item['file_type']}"
+            )
+
+            if st.button(
+                "Analyze Document",
+                key=f"analyze_library_{item['id']}"
+            ):
+
+                file_record = get_library_file(
+                    item["id"]
+                )
+
+                if file_record and file_record.get(
+                    "extracted_text"
+                ):
+
+                    try:
+
+                        result = analyze_document(
+                            file_record["extracted_text"],
+                            "Summarize and analyze this document.",
+                            require_user_id()
+                        )
+
+                        st.session_state[
+                            "library_analysis_result"
+                        ] = result["answer"]
+
+                    except Exception as error:
+
+                        st.error(str(error))
+
+                else:
+
+                    st.warning(
+                        "No extracted text is available."
+                    )
+
+            if st.button(
+                "Delete File",
+                key=f"delete_library_{item['id']}"
+            ):
+
+                delete_library_file(item["id"])
+
+                st.rerun()
+
+    analysis = st.session_state.get(
+        "library_analysis_result"
+    )
+
+    if analysis:
+
+        st.subheader("Document Analysis")
+
+        st.markdown(analysis)
+
+
+# ============================================================
+# 11. SCHEDULE WORKSPACE
+# ============================================================
+
+def render_schedule():
+
+    st.title("📅 Schedule")
+
+    with st.form("vinci_reminder_form"):
+
+        title = st.text_input(
+            "Reminder title"
+        )
+
+        description = st.text_area(
+            "Description"
+        )
+
+        date_value = st.date_input(
+            "Date"
+        )
+
+        time_value = st.time_input(
+            "Time"
+        )
+
+        submitted = st.form_submit_button(
+            "Create Reminder"
+        )
+
+    if submitted:
+
+        try:
+
+            reminder_time = datetime.combine(
+                date_value,
+                time_value
+            ).replace(tzinfo=timezone.utc)
+
+            create_reminder(
+                title,
+                reminder_time,
+                description
+            )
+
+            st.success("Reminder created.")
+
+            st.rerun()
+
+        except Exception as error:
+
+            st.error(str(error))
+
+    st.divider()
+
+    for reminder in get_reminders():
+
+        with st.container():
+
+            st.subheader(reminder["title"])
+
+            st.write(
+                reminder["description"] or ""
+            )
+
+            st.caption(
+                str(reminder["reminder_time"])
+            )
+
+            if reminder["is_completed"]:
+
+                st.success("Completed")
+
+            else:
+
+                if st.button(
+                    "Mark Complete",
+                    key=f"complete_{reminder['id']}"
+                ):
+
+                    complete_reminder(
+                        reminder["id"]
+                    )
+
+                    st.rerun()
+
+                if st.button(
+                    "Delete Reminder",
+                    key=f"delete_reminder_{reminder['id']}"
+                ):
+
+                    delete_reminder(
+                        reminder["id"]
+                    )
+
+                    st.rerun()
+
+
+# ============================================================
+# 12. ADMIN WORKSPACE
+# ============================================================
+
+def render_admin():
+
+    st.title("🛡️ Administration")
+
+    if not current_user_is_admin():
+
+        st.error("Administrator access required.")
+
+        return
+
+    statistics = get_admin_statistics()
+
+    cols = st.columns(5)
+
+    for column, (name, value) in zip(
+        cols,
+        statistics.items()
+    ):
+
+        column.metric(
+            name.replace("_", " ").title(),
+            value
+        )
+
+    st.divider()
+
+    st.subheader("User Management")
+
+    users = get_admin_user_records()
+
+    for user in users:
+
+        with st.expander(
+            f"{user['full_name']} — {user['email']}"
+        ):
+
+            st.write("Role:", user["role"])
+
+            st.write(
+                "Verified:",
+                user["is_verified"]
+            )
+
+            st.write(
+                "Active:",
+                user["is_active"]
+            )
+
+            st.write(
+                "Login count:",
+                user["login_count"]
+            )
+
+            if user["is_active"]:
+
+                if st.button(
+                    "Deactivate Account",
+                    key=f"deactivate_{user['id']}"
+                ):
+
+                    if user["id"] == get_current_user_id():
+
+                        st.warning(
+                            "You cannot deactivate your own account here."
+                        )
+
+                    else:
+
+                        admin_update_user_status(
+                            user["id"],
+                            False
+                        )
+
+                        st.rerun()
+
+            else:
+
+                if st.button(
+                    "Activate Account",
+                    key=f"activate_{user['id']}"
+                ):
+
+                    admin_update_user_status(
+                        user["id"],
+                        True
+                    )
+
+                    st.rerun()
+
+    st.divider()
+
+    st.subheader("Provider Status")
+
+    st.json(
+        get_ai_provider_status()
+    )
+
+    st.subheader("Recent Activity")
+
+    activities = get_admin_recent_activity()
+
+    for activity in activities:
+
+        st.write(
+            f"{activity['created_at']} — "
+            f"{activity['action']} — "
+            f"{activity['details'] or ''}"
+        )
+
+
+# ============================================================
+# 13. MAIN APPLICATION DASHBOARD
+# ============================================================
+
+def render_dashboard():
+
+    user = st.session_state.get("auth_user")
+
+    if not user:
+        return
+
+    vinci_header()
+
+    st.markdown(
+        f"### What's up, {safe_text(user['full_name'], 100)}?"
+    )
+
+    st.caption(
+        "Welcome to your VINCI AI workspace."
+    )
+
+    st.subheader("Your Workspaces")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        workspace_card(
+            "Chat",
+            "Your general AI assistant.",
+            "💬",
+            "chat"
+        )
+
+        workspace_card(
+            "Deep Research",
+            "Structured research and analysis.",
+            "🔬",
+            "research"
+        )
+
+        workspace_card(
+            "Image Studio",
+            "Generate and analyze images.",
+            "🎨",
+            "image"
+        )
+
+        workspace_card(
+            "Live with Vinci",
+            "Audio transcription and voice tools.",
+            "🎙️",
+            "live"
+        )
+
+    with col2:
+
+        workspace_card(
+            "Design Studio",
+            "Develop professional creative concepts.",
+            "🖌️",
+            "design"
+        )
+
+        workspace_card(
+            "Saved",
+            "Your saved work and AI responses.",
+            "📚",
+            "saved"
+        )
+
+        workspace_card(
+            "Library",
+            "Your uploaded documents.",
+            "🗂️",
+            "library"
+        )
+
+        workspace_card(
+            "Schedule",
+            "Manage your reminders.",
+            "📅",
+            "schedule"
+        )
+
+    if current_user_is_admin():
+
+        st.divider()
+
+        workspace_card(
+            "Admin",
+            "Manage VINCI AI users and platform activity.",
+            "🛡️",
+            "admin"
+        )
+
+
+# ============================================================
+# 14. MAIN NAVIGATION
+# ============================================================
+
+def render_application():
+
+    if not st.session_state.get("authenticated"):
+
+        render_authentication()
+
+        return
+
+    user = st.session_state.get("auth_user")
+
+    if not user:
+
+        st.session_state["authenticated"] = False
+
+        render_authentication()
+
+        return
+
+    with st.sidebar:
+
+        st.title("⚡ VINCI AI")
+
+        st.caption(
+            "JTEG Intelligence Platform"
+        )
+
+        st.write(
+            f"Signed in as {user['full_name']}"
+        )
+
+        st.divider()
+
+        pages = [
+            "Dashboard",
+            "Chat",
+            "Deep Research",
+            "Image Studio",
+            "Live with Vinci",
+            "Design Studio",
+            "Saved",
+            "Library",
+            "Schedule"
+        ]
+
+        if current_user_is_admin():
+            pages.append("Admin")
+
+        current_page = st.session_state.get(
+            "page",
+            "Chat"
+        )
+
+        if current_page not in pages:
+            current_page = "Chat"
+
+        selected_page = st.radio(
+            "Navigation",
+            pages,
+            index=pages.index(current_page)
+        )
+
+        st.session_state["page"] = selected_page
+
+        st.divider()
+
+        if st.button(
+            "Sign Out",
+            use_container_width=True
+        ):
+
+            logout_user()
+
+            st.session_state["authenticated"] = False
+
+            st.rerun()
+
+    if selected_page == "Dashboard":
+
+        render_dashboard()
+
+    elif selected_page == "Chat":
+
+        render_chat()
+
+    elif selected_page == "Deep Research":
+
+        render_deep_research()
+
+    elif selected_page == "Image Studio":
+
+        render_image_studio()
+
+    elif selected_page == "Live with Vinci":
+
+        render_live_with_vinci()
+
+    elif selected_page == "Design Studio":
+
+        render_design_studio()
+
+    elif selected_page == "Saved":
+
+        render_saved()
+
+    elif selected_page == "Library":
+
+        render_library()
+
+    elif selected_page == "Schedule":
+
+        render_schedule()
+
+    elif selected_page == "Admin":
+
+        render_admin()
+
+
+# ============================================================
+# 15. APPLICATION ENTRY POINT
+# ============================================================
+
+try:
+
+    render_application()
+
+except Exception as error:
+
+    logger.exception(
+        "VINCI application interface failed."
+    )
+
+    st.error(
+        "VINCI encountered an application error."
+    )
+
+    st.code(str(error))
+
+
+# ============================================================
+# END OF BLOCK 6
+# ============================================================
+
